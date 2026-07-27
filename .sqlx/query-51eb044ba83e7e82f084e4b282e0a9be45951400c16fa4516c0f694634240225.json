@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE session\n        SET refresh_token_hash = $1, expires_at = $2, last_used_at = NOW()\n        WHERE device_id = $3\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Timestamptz",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "51eb044ba83e7e82f084e4b282e0a9be45951400c16fa4516c0f694634240225"
+}

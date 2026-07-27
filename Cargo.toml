@@ -1,5 +1,5 @@
 [package]
-name = "hops"
+name = "auth67"
 version = "0.1.0"
 edition = "2024"
 
@@ -36,10 +36,6 @@ hmac = "0.12"
 [[example]]
 name = "comms_example"
 path = "examples/comms_example.rs"
-
-[[example]]
-name = "signup_example"
-path = "examples/signup_example.rs"
 
 [dev-dependencies]
 mockall = "0.13"

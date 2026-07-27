@@ -56,7 +56,13 @@ pub fn app_routes(state: Arc<AppState>) -> Router {
         .layer(axum_mw::from_fn_with_state(state, auth_mw));
 
     let cors = CorsLayer::new()
-        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::OPTIONS])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
         .allow_headers(Any)
         .allow_origin(Any);
 

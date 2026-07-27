@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE \"otp\"\n        SET failed_attempts = failed_attempts + 1\n        WHERE id = $1\n        RETURNING failed_attempts\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "failed_attempts",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0986f9c73ad8e8852e747c3c9510488f36da87dbb459286e85ec4fa0846eddfe"
+}

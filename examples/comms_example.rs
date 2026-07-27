@@ -1,14 +1,14 @@
-use hops::{adapters::comms::CommsAdapter, ports::comms::CommsPort};
+use auth67::{adapters::comms::CommsAdapter, ports::comms::CommsPort};
 use tracing::{error, info};
 
-const SMS_FROM: &str = "Hops";
+const SMS_FROM: &str = "Auth67";
 const SMS_TO: &str = "+4741387142";
 const SMS_MESSAGE: &str = "Hello!";
 
-const EMAIL_FROM: &str = "hops@resend.dev"; // TODO add your own domain
+const EMAIL_FROM: &str = "auth67@resend.dev"; // TODO add your own domain
 const EMAIL_TO: &str = "amund.fremming@gmail.com";
-const EMAIL_SUBJECT: &str = "Hello from Hops!";
-const EMAIL_HTML: &str = "<p>Welcome to Hops!</p>";
+const EMAIL_SUBJECT: &str = "Hello from Auth67!";
+const EMAIL_HTML: &str = "<p>Welcome to Auth67!</p>";
 
 #[tokio::main]
 async fn main() {

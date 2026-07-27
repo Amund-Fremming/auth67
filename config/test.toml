@@ -6,8 +6,8 @@ port = 3001
 url = "postgres://postgres:password@localhost:5432/storage_test"
 
 [auth]
-audience = "hops-test"
-issuer = "hops-test"
+audience = "auth67-test"
+issuer = "auth67-test"
 access_token_lifetime_minutes = 15
 refresh_token_lifetime_days = 30
 max_failed_login_attempts = 5
@@ -25,7 +25,7 @@ secret = "test-secret"
 [comms]
 username = "test-username"
 password = "test-password"
-from = "Hops"
+from = "Auth67"
 otp_message_template = "Your verification code is {code}"
 resend_api_key = "test-resend-key"
 

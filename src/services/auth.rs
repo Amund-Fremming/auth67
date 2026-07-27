@@ -126,11 +126,8 @@ impl AuthService {
     }
 
     fn generate_refresh_token(&self) -> String {
-        let refresh_token = {
-            let bytes: [u8; 32] = rand::random();
-            URL_SAFE_NO_PAD.encode(bytes)
-        };
-        refresh_token
+        let bytes: [u8; 32] = rand::random();
+        URL_SAFE_NO_PAD.encode(bytes)
     }
 
     fn audit_suspicious(&self, user_id: Uuid, description: &str) {
@@ -170,6 +167,7 @@ impl AuthService {
 
     /// TODO:
     /// - optimize 5/6 database trips
+    #[allow(clippy::too_many_arguments)]
     pub async fn signup(
         &self,
         otp_id: Uuid,
@@ -391,7 +389,7 @@ impl AuthService {
         let user_id = session.user_id;
         let valid_token = self
             .crypto
-            .verify(&refresh_token, &session.refresh_token_hash);
+            .verify(refresh_token, &session.refresh_token_hash);
 
         if !valid_token {
             self.audit_suspicious(user_id, "Invalid refresh token attempt");
@@ -596,11 +594,11 @@ tBkZIjFGA4t6duE5OAPX9muXdFFcLsTsgU/UFVgu2Tf83+jgsqsq2qV6JymAXZFi
         let mut mock = MockCryptoPort::new();
         mock.expect_hash().returning(|v| format!("hashed_{}", v));
         mock.expect_verify()
-            .returning(|v, h| h == &format!("hashed_{}", v));
+            .returning(|v, h| h == format!("hashed_{}", v));
         mock.expect_hash_password()
             .returning(|p| Ok(format!("argon2_{}", p)));
         mock.expect_verify_password()
-            .returning(|p, h| Ok(h == &format!("argon2_{}", p)));
+            .returning(|p, h| Ok(h == format!("argon2_{}", p)));
         mock
     }
 

@@ -6,8 +6,8 @@ port = 3000
 url = "postgres://postgres:password@localhost:5432/storage"
 
 [auth]
-audience = "hops-dev"
-issuer = "hops-dev"
+audience = "auth67-dev"
+issuer = "auth67-dev"
 access_token_lifetime_minutes = 15
 refresh_token_lifetime_days = 30
 max_failed_login_attempts = 5
@@ -25,7 +25,7 @@ secret = "dev-secret-change-in-production"
 [comms]
 username = ""  # Set via APP__COMMS__USERNAME env var
 password = ""  # Set via APP__COMMS__PASSWORD env var
-from = "Hops"
+from = "Auth67"
 otp_message_template = "Your verification code is {code}"
 resend_api_key = ""  # Set via APP__COMMS__RESEND_API_KEY env var
 

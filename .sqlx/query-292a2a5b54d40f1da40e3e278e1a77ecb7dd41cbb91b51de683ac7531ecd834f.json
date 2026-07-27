@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE user_credential\n        SET locked_until = NOW() + ($2 || ' hours')::interval, updated_at = NOW()\n        WHERE identity_id = $1\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "292a2a5b54d40f1da40e3e278e1a77ecb7dd41cbb91b51de683ac7531ecd834f"
+}

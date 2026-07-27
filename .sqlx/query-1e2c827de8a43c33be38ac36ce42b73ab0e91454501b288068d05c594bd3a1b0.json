@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE user_credential\n        SET failed_attempts = failed_attempts + 1, updated_at = NOW()\n        WHERE identity_id = $1\n        RETURNING failed_attempts\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "failed_attempts",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1e2c827de8a43c33be38ac36ce42b73ab0e91454501b288068d05c594bd3a1b0"
+}

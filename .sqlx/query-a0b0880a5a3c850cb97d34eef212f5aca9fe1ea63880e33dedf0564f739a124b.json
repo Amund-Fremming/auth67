@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE session\n        SET revoked_at = NOW()\n        WHERE device_id = $1\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a0b0880a5a3c850cb97d34eef212f5aca9fe1ea63880e33dedf0564f739a124b"
+}

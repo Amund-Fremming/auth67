@@ -77,6 +77,43 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
+name = "auth67"
+version = "0.1.0"
+dependencies = [
+ "argon2",
+ "async-trait",
+ "axum",
+ "base64",
+ "chrono",
+ "config",
+ "dotenvy",
+ "futures",
+ "hex",
+ "hmac",
+ "jsonwebtoken",
+ "mockall",
+ "once_cell",
+ "rand",
+ "regex",
+ "reqwest",
+ "rsa",
+ "rstest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "subtle",
+ "thiserror",
+ "tokio",
+ "toml",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "validator",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -983,43 +1020,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cc627f471c528ff0c4a49e1d5e60450c8f6461dd6d10ba9dcd3a61d3dff7728d"
 dependencies = [
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "hops"
-version = "0.1.0"
-dependencies = [
- "argon2",
- "async-trait",
- "axum",
- "base64",
- "chrono",
- "config",
- "dotenvy",
- "futures",
- "hex",
- "hmac",
- "jsonwebtoken",
- "mockall",
- "once_cell",
- "rand",
- "regex",
- "reqwest",
- "rsa",
- "rstest",
- "serde",
- "serde_json",
- "sha2",
- "sqlx",
- "subtle",
- "thiserror",
- "tokio",
- "toml",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "validator",
 ]
 
 [[package]]

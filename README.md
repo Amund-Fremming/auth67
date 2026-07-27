@@ -1,7 +1,5 @@
 ## TODO
 
-### TODO
-
 - [ ] Sms rate limiting/sms fraud bumping limiting. Try calling elks and ask for fraud detection
   - can try to limit exploit with combining user agent and ip address to blcok create requests, only issue is that 5g on mobiles can swap IP but might be ok here actually, because it wont block a user from creating more, just set a timeout on 30 seconds or so per number, and per user agent + ip or so?
 - [ ] Rate limiting with tower govenor
@@ -14,19 +12,11 @@
 - [ ] expand the refresh tokens to have session as parent
 - [ ] fix all todos
 - [ ] rate limit refresh token with device id
-- [ ] create sqlx tests for all auth flows so they can be ran in the pipeline
 - [ ] social login with google and apple
-
-### Auth / Security
-
-- [ ] Rate limiting with tower-governor
-- [ ] Lock recovery with OTP
 
 ### Decisions Needed
 
 - [ ] Add runtime var for dryrun SMS in local env
-- [ ] Drop email from user, make phone_number non-optional
-- [ ] probably move to another architecture like feature folder (even tough it will break fast because of importing eachother)
 - [ ] limit check on how many devices, the phone login takes in device id, can end up with many sessions if the client is stupid
 
 ### Proposals

@@ -6,8 +6,8 @@ port = 8080
 url = "postgres://postgres:password@postgres:5432/storage"
 
 [auth]
-audience = "hops"
-issuer = "hops"
+audience = "auth67"
+issuer = "auth67"
 access_token_lifetime_minutes = 15
 refresh_token_lifetime_days = 30
 max_failed_login_attempts = 5

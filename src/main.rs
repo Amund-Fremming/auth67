@@ -1,4 +1,4 @@
-use hops::{
+use auth67::{
     adapters::comms::CommsAdapter, adapters::crypto::CryptoAdapter, config::CONFIG,
     handlers::app_routes, services::auth::AuthService, services::otp::OtpService, state::AppState,
 };
@@ -15,7 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::from_default_env()
-                .add_directive("hops=info".parse().unwrap())
+                .add_directive("auth67=info".parse().unwrap())
                 .add_directive("tower_http=debug".parse().unwrap()),
         )
         .init();
