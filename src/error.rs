@@ -50,6 +50,24 @@ impl ErrorCode {
         Self::SmsFailed,
     ];
 
+    /// The HTTP status this code always maps to. Deriving the status from
+    /// the code rather than storing them side by side makes a mismatched
+    /// pair unrepresentable.
+    pub const fn status(&self) -> StatusCode {
+        match self {
+            Self::Internal | Self::SmsFailed => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::BadRequest | Self::Validation => StatusCode::BAD_REQUEST,
+            Self::Unauthorized | Self::InvalidCredentials | Self::OtpWrongCode => {
+                StatusCode::UNAUTHORIZED
+            }
+            Self::Forbidden => StatusCode::FORBIDDEN,
+            Self::NotFound | Self::OtpNotFound => StatusCode::NOT_FOUND,
+            Self::Conflict | Self::OtpAlreadyVerified => StatusCode::CONFLICT,
+            Self::OtpExpired => StatusCode::GONE,
+            Self::OtpMaxAttempts | Self::OtpMaxMessages => StatusCode::TOO_MANY_REQUESTS,
+        }
+    }
+
     /// The single source of truth for the wire format: both `Serialize` and
     /// `Display` delegate here so they can never disagree.
     pub const fn as_str(&self) -> &'static str {
@@ -99,6 +117,11 @@ impl ApiError {
             message: message.into(),
         }
     }
+
+    /// The HTTP status for this error, determined entirely by its code.
+    pub const fn status(&self) -> StatusCode {
+        self.code.status()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -132,13 +155,13 @@ pub enum ServerError {
 
     /// Escape hatch for one-off errors that don't warrant a named variant.
     /// Prefer a named variant for anything a caller might want to match on.
-    #[error("API error: {0} - {1:?}")]
-    Api(StatusCode, ApiError),
+    #[error("API error: {0:?}")]
+    Api(ApiError),
 }
 
 impl ServerError {
-    pub fn api(status: StatusCode, code: ErrorCode, message: impl Into<String>) -> Self {
-        Self::Api(status, ApiError::new(code, message))
+    pub fn api(code: ErrorCode, message: impl Into<String>) -> Self {
+        Self::Api(ApiError::new(code, message))
     }
 
     /// True when the underlying database error is a unique-constraint
@@ -153,8 +176,9 @@ impl ServerError {
 
     /// Maps this error to its wire representation. Internal faults are
     /// logged here and deliberately given opaque messages so that details
-    /// never reach the client.
-    pub fn to_api_error(self) -> (StatusCode, ApiError) {
+    /// never reach the client. The HTTP status follows from
+    /// [`ApiError::status`], so it is never chosen independently.
+    pub fn to_api_error(self) -> ApiError {
         match self {
             Self::Database(err) => {
                 error!("Database error: {}", err);
@@ -170,68 +194,52 @@ impl ServerError {
             }
             Self::Auth(msg) => {
                 warn!("Auth error: {}", msg);
-                (
-                    StatusCode::UNAUTHORIZED,
-                    ApiError::new(ErrorCode::Unauthorized, msg),
-                )
+                ApiError::new(ErrorCode::Unauthorized, msg)
             }
             Self::InvalidCredentials => {
                 warn!("Invalid credentials");
-                (
-                    StatusCode::UNAUTHORIZED,
-                    ApiError::new(ErrorCode::InvalidCredentials, "Invalid credentials"),
-                )
+                ApiError::new(ErrorCode::InvalidCredentials, "Invalid credentials")
             }
             Self::NotFound => {
                 warn!("Resource not found");
-                (
-                    StatusCode::NOT_FOUND,
-                    ApiError::new(ErrorCode::NotFound, "Not found"),
-                )
+                ApiError::new(ErrorCode::NotFound, "Not found")
             }
-            Self::Forbidden => (
-                StatusCode::FORBIDDEN,
-                ApiError::new(ErrorCode::Forbidden, "Forbidden"),
-            ),
+            Self::Forbidden => ApiError::new(ErrorCode::Forbidden, "Forbidden"),
             Self::Validation(msg) => {
                 warn!("Validation error: {}", msg);
-                (
-                    StatusCode::BAD_REQUEST,
-                    ApiError::new(ErrorCode::Validation, msg),
-                )
+                ApiError::new(ErrorCode::Validation, msg)
             }
             Self::Otp(err) => {
-                let (status, body) = err.to_api_error();
-                if status.is_server_error() {
-                    error!("OTP error: {}", err);
-                } else {
-                    warn!("OTP error: {}", err);
-                }
-                (status, body)
+                let body = err.to_api_error();
+                log_by_severity("OTP error", &body, &err);
+                body
             }
-            Self::Api(status, body) => {
-                if status.is_server_error() {
-                    error!("API error: {} - {:?}", status, body);
-                } else {
-                    warn!("API error: {} - {:?}", status, body);
-                }
-                (status, body)
+            Self::Api(body) => {
+                log_by_severity("API error", &body, &body.code);
+                body
             }
         }
     }
 }
 
-fn internal(message: &str) -> (StatusCode, ApiError) {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        ApiError::new(ErrorCode::Internal, message),
-    )
+fn internal(message: &str) -> ApiError {
+    ApiError::new(ErrorCode::Internal, message)
+}
+
+/// Server faults are logged at error level; anything the caller could have
+/// avoided is only a warning.
+fn log_by_severity(label: &str, body: &ApiError, cause: &dyn std::fmt::Display) {
+    if body.status().is_server_error() {
+        error!("{}: {}", label, cause);
+        return;
+    }
+    warn!("{}: {}", label, cause);
 }
 
 impl IntoResponse for ServerError {
     fn into_response(self) -> axum::response::Response {
-        let (status, body) = self.to_api_error();
-        (status, Json(body)).into_response()
+        let body = self.to_api_error();
+        (body.status(), Json(body)).into_response()
     }
 }
 
@@ -240,8 +248,8 @@ mod test {
     use super::*;
 
     fn code_of(err: ServerError) -> (StatusCode, ErrorCode) {
-        let (status, body) = err.to_api_error();
-        (status, body.code)
+        let body = err.to_api_error();
+        (body.status(), body.code)
     }
 
     #[test]
@@ -270,16 +278,15 @@ mod test {
 
     #[test]
     fn validation_message_reaches_the_client() {
-        let (_, body) = ServerError::Validation("phone_number is invalid".into()).to_api_error();
+        let body = ServerError::Validation("phone_number is invalid".into()).to_api_error();
         assert_eq!(body.message, "phone_number is invalid");
     }
 
     #[test]
     fn database_errors_are_opaque_to_the_client() {
-        let err = ServerError::Database(sqlx::Error::RowNotFound);
-        let (status, body) = err.to_api_error();
+        let body = ServerError::Database(sqlx::Error::RowNotFound).to_api_error();
 
-        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body.status(), StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(body.code, ErrorCode::Internal);
         assert_eq!(body.message, "Database error");
     }
@@ -298,26 +305,48 @@ mod test {
 
     #[test]
     fn otp_database_errors_are_opaque_to_the_client() {
-        let err = ServerError::Otp(OtpError::Database(sqlx::Error::RowNotFound));
-        let (status, body) = err.to_api_error();
+        let body = ServerError::Otp(OtpError::Database(sqlx::Error::RowNotFound)).to_api_error();
 
-        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body.status(), StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(body.code, ErrorCode::Internal);
         assert_eq!(body.message, "Database error");
     }
 
     #[test]
-    fn api_escape_hatch_preserves_status_code_and_message() {
-        let err = ServerError::api(
-            StatusCode::BAD_REQUEST,
-            ErrorCode::BadRequest,
-            "Something went wrong",
-        );
-        let (status, body) = err.to_api_error();
+    fn api_escape_hatch_derives_status_from_its_code() {
+        let body = ServerError::api(ErrorCode::BadRequest, "Something went wrong").to_api_error();
 
-        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body.status(), StatusCode::BAD_REQUEST);
         assert_eq!(body.code, ErrorCode::BadRequest);
         assert_eq!(body.message, "Something went wrong");
+    }
+
+    /// Guards the invariant that motivated dropping the status field: a code
+    /// must never map to a status that contradicts its own category.
+    #[test]
+    fn every_code_maps_to_a_client_or_server_error_status() {
+        for code in ErrorCode::ALL {
+            let status = code.status();
+            assert!(
+                status.is_client_error() || status.is_server_error(),
+                "{} maps to non-error status {}",
+                code,
+                status
+            );
+        }
+    }
+
+    #[test]
+    fn only_internal_faults_map_to_server_error_statuses() {
+        for code in ErrorCode::ALL {
+            let is_internal = matches!(code, ErrorCode::Internal | ErrorCode::SmsFailed);
+            assert_eq!(
+                code.status().is_server_error(),
+                is_internal,
+                "unexpected server-error classification for {}",
+                code
+            );
+        }
     }
 
     #[test]

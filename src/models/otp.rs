@@ -1,4 +1,3 @@
-use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -37,17 +36,17 @@ pub enum OtpError {
 }
 
 impl OtpError {
-    pub fn to_api_error(&self) -> (StatusCode, ApiError) {
-        let (status, code) = match self {
-            Self::Expired => (StatusCode::GONE, ErrorCode::OtpExpired),
-            Self::MaxAttemptsExceeded => (StatusCode::TOO_MANY_REQUESTS, ErrorCode::OtpMaxAttempts),
-            Self::MaxMessagesExceeded => (StatusCode::TOO_MANY_REQUESTS, ErrorCode::OtpMaxMessages),
-            Self::WrongCode => (StatusCode::UNAUTHORIZED, ErrorCode::OtpWrongCode),
-            Self::AlreadyVerified => (StatusCode::CONFLICT, ErrorCode::OtpAlreadyVerified),
-            Self::NotFound => (StatusCode::NOT_FOUND, ErrorCode::OtpNotFound),
-            Self::SmsFailed => (StatusCode::INTERNAL_SERVER_ERROR, ErrorCode::SmsFailed),
+    pub fn to_api_error(&self) -> ApiError {
+        let code = match self {
+            Self::Expired => ErrorCode::OtpExpired,
+            Self::MaxAttemptsExceeded => ErrorCode::OtpMaxAttempts,
+            Self::MaxMessagesExceeded => ErrorCode::OtpMaxMessages,
+            Self::WrongCode => ErrorCode::OtpWrongCode,
+            Self::AlreadyVerified => ErrorCode::OtpAlreadyVerified,
+            Self::NotFound => ErrorCode::OtpNotFound,
+            Self::SmsFailed => ErrorCode::SmsFailed,
             // Internal fault: keep the cause out of the response body
-            Self::Database(_) => (StatusCode::INTERNAL_SERVER_ERROR, ErrorCode::Internal),
+            Self::Database(_) => ErrorCode::Internal,
         };
 
         let message = match self {
@@ -55,7 +54,7 @@ impl OtpError {
             other => other.to_string(),
         };
 
-        (status, ApiError::new(code, message))
+        ApiError::new(code, message)
     }
 }
 

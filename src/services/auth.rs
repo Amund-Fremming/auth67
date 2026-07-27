@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::http::StatusCode;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
@@ -37,11 +36,7 @@ const DUMMY_PASSWORD_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$ZHVtbXlzYWx0Zm
 /// Deliberately vague so signup responses never confirm whether an
 /// identifier is already registered.
 fn identifier_in_use_error() -> ServerError {
-    ServerError::api(
-        StatusCode::BAD_REQUEST,
-        ErrorCode::BadRequest,
-        "Something went wrong",
-    )
+    ServerError::api(ErrorCode::BadRequest, "Something went wrong")
 }
 
 pub struct AuthService {
@@ -555,6 +550,7 @@ mod test {
     use super::*;
     use crate::config::AuthConfig;
     use crate::ports::crypto::MockCryptoPort;
+    use axum::http::StatusCode;
 
     // Test RSA key pair (2048-bit PKCS#8 format, for testing only)
     const TEST_PRIVATE_KEY_PEM: &str = r#"-----BEGIN PRIVATE KEY-----
@@ -1329,8 +1325,8 @@ tBkZIjFGA4t6duE5OAPX9muXdFFcLsTsgU/UFVgu2Tf83+jgsqsq2qV6JymAXZFi
             .await;
 
         let err = result.expect_err("second signup should be rejected");
-        let (status, body) = err.to_api_error();
-        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let body = err.to_api_error();
+        assert_eq!(body.status(), StatusCode::BAD_REQUEST);
         assert_eq!(body.code, ErrorCode::BadRequest);
 
         // The rejected signup must not have left a second user behind
