@@ -6,7 +6,20 @@
       "Bash(git check-ignore *)",
       "Bash(echo \"check-ignore exit: $?\")",
       "Bash(echo \"=== exit: $? \\(1 means no matches\\) ===\")",
-      "Bash(grep -E \"\\\\.\\(env|toml\\)$|config/\")"
+      "Bash(grep -E \"\\\\.\\(env|toml\\)$|config/\")",
+      "Bash(git -C /Users/amund.fremming/Documents/code/auth67 ls-files)",
+      "Bash(docker compose *)",
+      "Bash(export DATABASE_URL=postgres://postgres:password@localhost:5432/auth67)",
+      "Bash(sqlx database *)",
+      "Bash(psql postgres://postgres:password@localhost:5432/auth67 -c '\\\\dt')",
+      "Bash(docker exec *)",
+      "Bash(cargo sqlx *)",
+      "Bash(cargo clippy *)",
+      "Bash(cargo test *)",
+      "Bash(cargo fmt *)",
+      "Bash(grep -vE \"\\\\.\\(rs|json|sql|toml|lock\\)$\")",
+      "Bash(find . -path ./target -prune -o -path ./.git -prune -o -type f \\\\\\( -name \"*.html\" -o -name \"*.tsx\" -o -name \"*.jsx\" -o -name \"*.ts\" -o -name \"*.js\" -o -name \"*.svelte\" -o -name \"*.vue\" -o -name \"*.css\" \\\\\\) -print 2>/dev/null | head -20; echo \"=== templates/askama/tera deps? ===\"; grep -inE \"askama|tera|maud|minijinja|handlebars|yew|leptos|dioxus\" Cargo.toml || echo \"none\"; echo \"=== sibling projects ===\"; ls /Users/amund.fremming/Documents/code/)",
+      "Read(//Users/amund.fremming/Documents/code/**)"
     ]
   }
 }

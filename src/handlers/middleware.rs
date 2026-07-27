@@ -2,19 +2,19 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Request, State},
+    http::header::AUTHORIZATION,
     middleware::Next,
     response::Response,
 };
-use reqwest::{StatusCode, header::AUTHORIZATION};
 use tracing::warn;
 
-use crate::state::AppState;
+use crate::{error::ServerError, state::AppState};
 
 pub(crate) async fn auth_mw(
     State(state): State<Arc<AppState>>,
     mut req: Request,
     next: Next,
-) -> Result<Response, StatusCode> {
+) -> Result<Response, ServerError> {
     let token = req
         .headers()
         .get(AUTHORIZATION)
@@ -23,7 +23,9 @@ pub(crate) async fn auth_mw(
 
     let Some(token) = token else {
         warn!("Missing or invalid Authorization header");
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err(ServerError::Auth(
+            "Missing or invalid Authorization header".to_string(),
+        ));
     };
 
     let claims = state.auth.validate_token(token)?;

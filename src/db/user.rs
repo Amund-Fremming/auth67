@@ -4,7 +4,6 @@ use uuid::Uuid;
 
 use crate::db;
 use crate::error::ServerError;
-use crate::models::auth::ProviderType;
 use crate::models::user::{PatchUserRequest, User};
 
 pub async fn get_user(pool: &Pool<Postgres>, id: Uuid) -> Result<Option<User>, ServerError> {
@@ -118,43 +117,6 @@ pub async fn delete_user(pool: &Pool<Postgres>, id: Uuid) -> Result<bool, Server
     .await?;
 
     Ok(result.rows_affected() > 0)
-}
-
-pub async fn is_identifier_in_use(
-    pool: &Pool<Postgres>,
-    provider_type: ProviderType,
-    identifier: &str,
-) -> Result<bool, ServerError> {
-    let exists = match provider_type {
-        ProviderType::Email => {
-            sqlx::query_scalar!(
-                r#"
-                SELECT EXISTS(
-                    SELECT 1 FROM "user"
-                    WHERE email = $1 AND email_verified = TRUE
-                ) as "exists!"
-                "#,
-                identifier
-            )
-            .fetch_one(pool)
-            .await?
-        }
-        ProviderType::Phone => {
-            sqlx::query_scalar!(
-                r#"
-                SELECT EXISTS(
-                    SELECT 1 FROM "user"
-                    WHERE phone_number = $1 AND phone_number_verified = TRUE
-                ) as "exists!"
-                "#,
-                identifier
-            )
-            .fetch_one(pool)
-            .await?
-        }
-    };
-
-    Ok(exists)
 }
 
 pub async fn touch_last_active(pool: &Pool<Postgres>, user_id: Uuid) -> Result<(), ServerError> {

@@ -10,11 +10,10 @@ use crate::{
 use axum::{
     Extension, Json, Router,
     extract::State,
-    http::HeaderMap,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
 };
-use reqwest::StatusCode;
 
 use crate::{
     db,

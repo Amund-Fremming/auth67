@@ -1,10 +1,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::http::StatusCode;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
-use reqwest::StatusCode;
 use serde_json::json;
 use sqlx::{Pool, Postgres};
 use tracing::{error, info, warn};
@@ -16,13 +16,12 @@ use crate::{
         self,
         audit::create_audit,
         auth::{
-            get_login_credentials, increment_and_get_failed_attempts, lock_account,
-            reset_failed_attempts,
+            get_login_credentials, increment_and_get_failed_attempts, is_identifier_in_use,
+            lock_account, reset_failed_attempts,
         },
         otp::get_otp_by_id,
-        user::is_identifier_in_use,
     },
-    error::ServerError,
+    error::{ErrorCode, ServerError},
     models::{
         audit::{Action, AuditBuilder, ResourceType},
         auth::{Claims, Jwk, Jwks, ProviderType, TokenResponse},
@@ -34,6 +33,16 @@ use crate::{
 /// Dummy Argon2 hash for timing-safe login.
 /// Used when user not found to prevent timing oracle attacks.
 const DUMMY_PASSWORD_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$ZHVtbXlzYWx0Zm9ydGltaW5n$K8H8X3Q9Z5Y2W1V0U9T8S7R6Q5P4O3N2M1L0K9J8I7H6";
+
+/// Deliberately vague so signup responses never confirm whether an
+/// identifier is already registered.
+fn identifier_in_use_error() -> ServerError {
+    ServerError::api(
+        StatusCode::BAD_REQUEST,
+        ErrorCode::BadRequest,
+        "Something went wrong",
+    )
+}
 
 pub struct AuthService {
     config: AuthConfig,
@@ -96,11 +105,11 @@ impl AuthService {
         &self.jwks
     }
 
-    pub fn validate_token(&self, token: &str) -> Result<Claims, StatusCode> {
+    pub fn validate_token(&self, token: &str) -> Result<Claims, ServerError> {
         let token_data =
             decode::<Claims>(token, &self.decoding_key, &self.validation).map_err(|e| {
                 warn!("Token validation failed: {}", e);
-                StatusCode::UNAUTHORIZED
+                ServerError::Auth("Invalid token".to_string())
             })?;
 
         let claims = token_data.claims;
@@ -188,7 +197,7 @@ impl AuthService {
 
         if is_identifier_in_use(&self.pool, provider_type, &identifier).await? {
             warn!("Signup attempted with identifier already in use");
-            return Err(ServerError::Conflict);
+            return Err(identifier_in_use_error());
         }
 
         let mut user = User::new(given_name, family_name);
@@ -207,8 +216,19 @@ impl AuthService {
 
         let mut tx = self.pool.begin().await?;
         db::user::create_user(&mut *tx, &user).await?;
-        let identity =
-            db::auth::create_identity(&mut *tx, user.id, provider_type, &identifier).await?;
+        // The pre-check above is racy: a concurrent signup can claim the
+        // identifier between check and insert. The unique constraint on
+        // user_identity is the real guarantee; map it to the same response.
+        let identity = db::auth::create_identity(&mut *tx, user.id, provider_type, &identifier)
+            .await
+            .map_err(|e| {
+                if e.is_unique_violation() {
+                    warn!("Signup lost race: identifier registered concurrently");
+                    identifier_in_use_error()
+                } else {
+                    e
+                }
+            })?;
         db::auth::create_credential(&mut *tx, identity.id, &password_hash).await?;
         tx.commit().await?;
 
@@ -715,7 +735,7 @@ tBkZIjFGA4t6duE5OAPX9muXdFFcLsTsgU/UFVgu2Tf83+jgsqsq2qV6JymAXZFi
         let result = service.validate_token(&expired_token);
 
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), StatusCode::UNAUTHORIZED);
+        assert!(matches!(result.unwrap_err(), ServerError::Auth(_)));
     }
 
     #[tokio::test]
@@ -739,7 +759,7 @@ tBkZIjFGA4t6duE5OAPX9muXdFFcLsTsgU/UFVgu2Tf83+jgsqsq2qV6JymAXZFi
         let result = service.validate_token(&token);
 
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), StatusCode::UNAUTHORIZED);
+        assert!(matches!(result.unwrap_err(), ServerError::Auth(_)));
     }
 
     #[tokio::test]
@@ -762,7 +782,7 @@ tBkZIjFGA4t6duE5OAPX9muXdFFcLsTsgU/UFVgu2Tf83+jgsqsq2qV6JymAXZFi
         let result = service.validate_token(&token);
 
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), StatusCode::UNAUTHORIZED);
+        assert!(matches!(result.unwrap_err(), ServerError::Auth(_)));
     }
 
     #[tokio::test]
@@ -772,7 +792,7 @@ tBkZIjFGA4t6duE5OAPX9muXdFFcLsTsgU/UFVgu2Tf83+jgsqsq2qV6JymAXZFi
         let result = service.validate_token("not.a.valid.jwt");
 
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), StatusCode::UNAUTHORIZED);
+        assert!(matches!(result.unwrap_err(), ServerError::Auth(_)));
     }
 
     #[tokio::test]
@@ -782,7 +802,7 @@ tBkZIjFGA4t6duE5OAPX9muXdFFcLsTsgU/UFVgu2Tf83+jgsqsq2qV6JymAXZFi
         let result = service.validate_token("");
 
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), StatusCode::UNAUTHORIZED);
+        assert!(matches!(result.unwrap_err(), ServerError::Auth(_)));
     }
 
     #[tokio::test]
@@ -929,7 +949,7 @@ tBkZIjFGA4t6duE5OAPX9muXdFFcLsTsgU/UFVgu2Tf83+jgsqsq2qV6JymAXZFi
         let result = service.validate_token(&token);
 
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), StatusCode::UNAUTHORIZED);
+        assert!(matches!(result.unwrap_err(), ServerError::Auth(_)));
     }
 
     #[tokio::test]
@@ -966,7 +986,7 @@ tBkZIjFGA4t6duE5OAPX9muXdFFcLsTsgU/UFVgu2Tf83+jgsqsq2qV6JymAXZFi
         let result = service.validate_token(&token);
 
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), StatusCode::UNAUTHORIZED);
+        assert!(matches!(result.unwrap_err(), ServerError::Auth(_)));
     }
 
     #[tokio::test]
@@ -1008,7 +1028,7 @@ tBkZIjFGA4t6duE5OAPX9muXdFFcLsTsgU/UFVgu2Tf83+jgsqsq2qV6JymAXZFi
         let result = service.validate_token(&token);
 
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), StatusCode::UNAUTHORIZED);
+        assert!(matches!(result.unwrap_err(), ServerError::Auth(_)));
     }
 
     fn create_integration_test_service(pool: Pool<Postgres>) -> AuthService {
@@ -1228,5 +1248,208 @@ tBkZIjFGA4t6duE5OAPX9muXdFFcLsTsgU/UFVgu2Tf83+jgsqsq2qV6JymAXZFi
             .unwrap();
         assert!(!device_1_session.active);
         assert!(device_2_session.active);
+    }
+
+    /// Inserts an already-verified OTP so signup can consume it.
+    async fn insert_verified_otp(
+        pool: &sqlx::PgPool,
+        identifier: &str,
+        provider_type: ProviderType,
+    ) -> Uuid {
+        sqlx::query_scalar!(
+            r#"
+            INSERT INTO "otp" (identifier, provider_type, hash, expires_at, verified_at)
+            VALUES ($1, $2, 'hash', NOW() + interval '10 minutes', NOW())
+            RETURNING id
+            "#,
+            identifier,
+            provider_type as ProviderType
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    #[sqlx::test]
+    async fn signup_succeeds_with_phone_provider(pool: sqlx::PgPool) {
+        let service = create_integration_test_service(pool.clone());
+        let otp_id = insert_verified_otp(&pool, "+4712345678", ProviderType::Phone).await;
+
+        let result = service
+            .signup(
+                otp_id,
+                ProviderType::Phone,
+                "Test Device",
+                None,
+                "Ada",
+                "Lovelace",
+                "password123",
+            )
+            .await;
+
+        assert!(result.is_ok(), "signup failed: {:?}", result.err());
+        assert!(
+            is_identifier_in_use(&pool, ProviderType::Phone, "+4712345678")
+                .await
+                .unwrap()
+        );
+    }
+
+    #[sqlx::test]
+    async fn signup_fails_when_phone_number_already_in_use(pool: sqlx::PgPool) {
+        let service = create_integration_test_service(pool.clone());
+        let phone = "+4712345678";
+
+        let first_otp = insert_verified_otp(&pool, phone, ProviderType::Phone).await;
+        service
+            .signup(
+                first_otp,
+                ProviderType::Phone,
+                "Device One",
+                None,
+                "Ada",
+                "Lovelace",
+                "password123",
+            )
+            .await
+            .unwrap();
+
+        // A second signup for the same phone number must be rejected
+        let second_otp = insert_verified_otp(&pool, phone, ProviderType::Phone).await;
+        let result = service
+            .signup(
+                second_otp,
+                ProviderType::Phone,
+                "Device Two",
+                None,
+                "Grace",
+                "Hopper",
+                "password456",
+            )
+            .await;
+
+        let err = result.expect_err("second signup should be rejected");
+        let (status, body) = err.to_api_error();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body.code, ErrorCode::BadRequest);
+
+        // The rejected signup must not have left a second user behind
+        let user_count: i64 = sqlx::query_scalar!(r#"SELECT COUNT(*) as "count!" FROM "user""#)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(user_count, 1);
+    }
+
+    #[sqlx::test]
+    async fn signup_fails_when_email_already_in_use(pool: sqlx::PgPool) {
+        let service = create_integration_test_service(pool.clone());
+        let email = "ada@example.com";
+
+        let first_otp = insert_verified_otp(&pool, email, ProviderType::Email).await;
+        service
+            .signup(
+                first_otp,
+                ProviderType::Email,
+                "Device One",
+                None,
+                "Ada",
+                "Lovelace",
+                "password123",
+            )
+            .await
+            .unwrap();
+
+        let second_otp = insert_verified_otp(&pool, email, ProviderType::Email).await;
+        let result = service
+            .signup(
+                second_otp,
+                ProviderType::Email,
+                "Device Two",
+                None,
+                "Grace",
+                "Hopper",
+                "password456",
+            )
+            .await;
+
+        assert!(result.is_err());
+    }
+
+    /// The same identifier under a different provider is a distinct
+    /// identity and must still be allowed.
+    #[sqlx::test]
+    async fn signup_allows_same_identifier_under_different_provider(pool: sqlx::PgPool) {
+        let service = create_integration_test_service(pool.clone());
+        let identifier = "ada@example.com";
+
+        let phone_otp = insert_verified_otp(&pool, identifier, ProviderType::Phone).await;
+        service
+            .signup(
+                phone_otp,
+                ProviderType::Phone,
+                "Device One",
+                None,
+                "Ada",
+                "Lovelace",
+                "password123",
+            )
+            .await
+            .unwrap();
+
+        let email_otp = insert_verified_otp(&pool, identifier, ProviderType::Email).await;
+        let result = service
+            .signup(
+                email_otp,
+                ProviderType::Email,
+                "Device Two",
+                None,
+                "Grace",
+                "Hopper",
+                "password456",
+            )
+            .await;
+
+        assert!(result.is_ok(), "signup failed: {:?}", result.err());
+    }
+
+    #[sqlx::test]
+    async fn signup_fails_when_otp_not_verified(pool: sqlx::PgPool) {
+        let service = create_integration_test_service(pool.clone());
+
+        let otp_id = sqlx::query_scalar!(
+            r#"
+            INSERT INTO "otp" (identifier, provider_type, hash, expires_at)
+            VALUES ('+4712345678', $1, 'hash', NOW() + interval '10 minutes')
+            RETURNING id
+            "#,
+            ProviderType::Phone as ProviderType
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        let result = service
+            .signup(
+                otp_id,
+                ProviderType::Phone,
+                "Test Device",
+                None,
+                "Ada",
+                "Lovelace",
+                "password123",
+            )
+            .await;
+
+        assert!(matches!(result.unwrap_err(), ServerError::Auth(_)));
+    }
+
+    #[sqlx::test]
+    async fn is_identifier_in_use_is_false_for_unknown_identifier(pool: sqlx::PgPool) {
+        let in_use = is_identifier_in_use(&pool, ProviderType::Phone, "+4700000000")
+            .await
+            .unwrap();
+
+        assert!(!in_use);
     }
 }

@@ -34,6 +34,30 @@ where
     Ok(identity)
 }
 
+/// Checks `user_identity`, the authoritative table for login identifiers.
+/// The `user` table's phone/email columns are denormalized copies written
+/// in the same transaction, so they never need a separate check.
+pub async fn is_identifier_in_use(
+    pool: &Pool<Postgres>,
+    provider_type: ProviderType,
+    identifier: &str,
+) -> Result<bool, ServerError> {
+    let exists = sqlx::query_scalar!(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM user_identity
+            WHERE provider_type = $1 AND identifier = $2
+        ) as "exists!"
+        "#,
+        provider_type as ProviderType,
+        identifier
+    )
+    .fetch_one(pool)
+    .await?;
+
+    Ok(exists)
+}
+
 pub async fn get_credential(
     pool: &Pool<Postgres>,
     user_id: Uuid,

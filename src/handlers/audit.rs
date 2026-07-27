@@ -3,10 +3,10 @@ use std::sync::Arc;
 use axum::{
     Extension, Json, Router,
     extract::{Query, State},
+    http::StatusCode,
     response::IntoResponse,
     routing::get,
 };
-use reqwest::StatusCode;
 
 use crate::{
     db, error::ServerError, models::audit::AuditQuery, models::auth::Claims, state::AppState,

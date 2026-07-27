@@ -1,0 +1,33 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO \"otp\" (identifier, provider_type, hash, expires_at, verified_at)\n            VALUES ($1, $2, 'hash', NOW() + interval '10 minutes', NOW())\n            RETURNING id\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        {
+          "Custom": {
+            "name": "provider_type",
+            "kind": {
+              "Enum": [
+                "phone",
+                "email"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9fe8fa4e6fdfdf5587faea6123ae9706770433a1df73d19000ce4519a8a02bab"
+}

@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
-use axum::{Extension, Json, Router, extract::State, response::IntoResponse, routing::get};
-use reqwest::StatusCode;
+use axum::{
+    Extension, Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::get,
+};
 
 use crate::{db, error::ServerError, models::auth::Claims, state::AppState};
 

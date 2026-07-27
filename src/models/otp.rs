@@ -1,3 +1,4 @@
+use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -5,6 +6,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use validator::{Validate, ValidationError};
 
+use crate::error::{ApiError, ErrorCode};
 use crate::models::auth::ProviderType;
 
 #[derive(Debug, thiserror::Error)]
@@ -32,6 +34,29 @@ pub enum OtpError {
 
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
+}
+
+impl OtpError {
+    pub fn to_api_error(&self) -> (StatusCode, ApiError) {
+        let (status, code) = match self {
+            Self::Expired => (StatusCode::GONE, ErrorCode::OtpExpired),
+            Self::MaxAttemptsExceeded => (StatusCode::TOO_MANY_REQUESTS, ErrorCode::OtpMaxAttempts),
+            Self::MaxMessagesExceeded => (StatusCode::TOO_MANY_REQUESTS, ErrorCode::OtpMaxMessages),
+            Self::WrongCode => (StatusCode::UNAUTHORIZED, ErrorCode::OtpWrongCode),
+            Self::AlreadyVerified => (StatusCode::CONFLICT, ErrorCode::OtpAlreadyVerified),
+            Self::NotFound => (StatusCode::NOT_FOUND, ErrorCode::OtpNotFound),
+            Self::SmsFailed => (StatusCode::INTERNAL_SERVER_ERROR, ErrorCode::SmsFailed),
+            // Internal fault: keep the cause out of the response body
+            Self::Database(_) => (StatusCode::INTERNAL_SERVER_ERROR, ErrorCode::Internal),
+        };
+
+        let message = match self {
+            Self::Database(_) => "Database error".to_string(),
+            other => other.to_string(),
+        };
+
+        (status, ApiError::new(code, message))
+    }
 }
 
 #[derive(Debug, Serialize)]
