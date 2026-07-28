@@ -30,8 +30,10 @@ pub struct DatabaseConfig {
 pub struct CommsConfig {
     pub username: String,
     pub password: String,
-    pub from: String,
+    pub from_phone: String,
+    pub from_email: String,
     pub otp_message_template: String,
+    pub otp_email_subject: String,
     pub resend_api_key: String,
 }
 

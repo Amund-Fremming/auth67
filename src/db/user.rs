@@ -1,3 +1,4 @@
+use axum::http::StatusCode;
 use sqlx::{Executor, Pool, Postgres};
 use tracing::warn;
 use uuid::Uuid;
@@ -78,7 +79,10 @@ pub async fn patch_user(
         warn!("User tried patching with no updated fields");
         return db::user::get_user(pool, user_id)
             .await?
-            .ok_or(ServerError::NotFound);
+            .ok_or(ServerError::Http(
+                StatusCode::NOT_FOUND,
+                "User not found".to_string(),
+            ));
     }
 
     let user = sqlx::query_as!(
@@ -100,7 +104,7 @@ pub async fn patch_user(
     )
     .fetch_optional(pool)
     .await?
-    .ok_or(ServerError::NotFound)?;
+    .ok_or(ServerError::Http(StatusCode::NOT_FOUND, "User not found".to_string()))?;
 
     Ok(user)
 }

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Request, State},
-    http::header::AUTHORIZATION,
+    http::{StatusCode, header::AUTHORIZATION},
     middleware::Next,
     response::Response,
 };
@@ -23,8 +23,9 @@ pub(crate) async fn auth_mw(
 
     let Some(token) = token else {
         warn!("Missing or invalid Authorization header");
-        return Err(ServerError::Auth(
-            "Missing or invalid Authorization header".to_string(),
+        return Err(ServerError::Http(
+            StatusCode::UNAUTHORIZED,
+            "Unauthorized".to_string(),
         ));
     };
 

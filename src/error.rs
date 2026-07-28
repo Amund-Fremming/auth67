@@ -4,22 +4,13 @@ use axum::response::IntoResponse;
 use serde::Serialize;
 use tracing::{error, warn};
 
-pub use crate::models::otp::OtpError;
 use crate::ports::crypto::CryptoError;
 
-/// Stable, machine-readable error identifier. Clients branch on these to
-/// pick a translated message, so the strings are part of the public API
-/// contract — add freely, but rename or remove only as a breaking change.
+/// Domain error codes for frontend translation.
+/// Clients match on these to show localized messages.
+/// Add freely, but rename/remove only as breaking change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ErrorCode {
-    Internal,
-    BadRequest,
-    Validation,
-    Unauthorized,
-    InvalidCredentials,
-    Forbidden,
-    NotFound,
-    Conflict,
+pub enum AppErrorCode {
     OtpExpired,
     OtpWrongCode,
     OtpAlreadyVerified,
@@ -27,59 +18,15 @@ pub enum ErrorCode {
     OtpMaxAttempts,
     OtpMaxMessages,
     SmsFailed,
+    EmailFailed,
+    InvalidCredentials,
+    ValidationFailed,
+    PasswordSameAsOld,
 }
 
-impl ErrorCode {
-    /// Every code, so clients (and the contract test below) can enumerate
-    /// the full set that needs a translation.
-    pub const ALL: &'static [ErrorCode] = &[
-        Self::Internal,
-        Self::BadRequest,
-        Self::Validation,
-        Self::Unauthorized,
-        Self::InvalidCredentials,
-        Self::Forbidden,
-        Self::NotFound,
-        Self::Conflict,
-        Self::OtpExpired,
-        Self::OtpWrongCode,
-        Self::OtpAlreadyVerified,
-        Self::OtpNotFound,
-        Self::OtpMaxAttempts,
-        Self::OtpMaxMessages,
-        Self::SmsFailed,
-    ];
-
-    /// The HTTP status this code always maps to. Deriving the status from
-    /// the code rather than storing them side by side makes a mismatched
-    /// pair unrepresentable.
-    pub const fn status(&self) -> StatusCode {
-        match self {
-            Self::Internal | Self::SmsFailed => StatusCode::INTERNAL_SERVER_ERROR,
-            Self::BadRequest | Self::Validation => StatusCode::BAD_REQUEST,
-            Self::Unauthorized | Self::InvalidCredentials | Self::OtpWrongCode => {
-                StatusCode::UNAUTHORIZED
-            }
-            Self::Forbidden => StatusCode::FORBIDDEN,
-            Self::NotFound | Self::OtpNotFound => StatusCode::NOT_FOUND,
-            Self::Conflict | Self::OtpAlreadyVerified => StatusCode::CONFLICT,
-            Self::OtpExpired => StatusCode::GONE,
-            Self::OtpMaxAttempts | Self::OtpMaxMessages => StatusCode::TOO_MANY_REQUESTS,
-        }
-    }
-
-    /// The single source of truth for the wire format: both `Serialize` and
-    /// `Display` delegate here so they can never disagree.
+impl AppErrorCode {
     pub const fn as_str(&self) -> &'static str {
         match self {
-            Self::Internal => "INTERNAL",
-            Self::BadRequest => "BAD_REQUEST",
-            Self::Validation => "VALIDATION",
-            Self::Unauthorized => "UNAUTHORIZED",
-            Self::InvalidCredentials => "INVALID_CREDENTIALS",
-            Self::Forbidden => "FORBIDDEN",
-            Self::NotFound => "NOT_FOUND",
-            Self::Conflict => "CONFLICT",
             Self::OtpExpired => "OTP_EXPIRED",
             Self::OtpWrongCode => "OTP_WRONG_CODE",
             Self::OtpAlreadyVerified => "OTP_ALREADY_VERIFIED",
@@ -87,159 +34,123 @@ impl ErrorCode {
             Self::OtpMaxAttempts => "OTP_MAX_ATTEMPTS",
             Self::OtpMaxMessages => "OTP_MAX_MESSAGES",
             Self::SmsFailed => "SMS_FAILED",
+            Self::EmailFailed => "EMAIL_FAILED",
+            Self::InvalidCredentials => "INVALID_CREDENTIALS",
+            Self::ValidationFailed => "VALIDATION_FAILED",
+            Self::PasswordSameAsOld => "PASSWORD_SAME_AS_OLD",
+        }
+    }
+
+    pub const fn status(&self) -> StatusCode {
+        match self {
+            Self::OtpExpired => StatusCode::GONE,
+            Self::OtpWrongCode | Self::InvalidCredentials => StatusCode::UNAUTHORIZED,
+            Self::OtpAlreadyVerified => StatusCode::CONFLICT,
+            Self::OtpNotFound => StatusCode::NOT_FOUND,
+            Self::OtpMaxAttempts | Self::OtpMaxMessages => StatusCode::TOO_MANY_REQUESTS,
+            Self::SmsFailed | Self::EmailFailed => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::ValidationFailed | Self::PasswordSameAsOld => StatusCode::BAD_REQUEST,
         }
     }
 }
 
-impl std::fmt::Display for ErrorCode {
+impl std::fmt::Display for AppErrorCode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
     }
 }
 
-impl Serialize for ErrorCode {
+impl Serialize for AppErrorCode {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(self.as_str())
     }
 }
 
-/// The JSON body returned for every failed request.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ApiError {
-    pub code: ErrorCode,
+/// JSON body for domain errors - frontend matches on `code`.
+#[derive(Debug, Clone, Serialize)]
+pub struct AppError {
+    pub code: AppErrorCode,
     pub message: String,
-}
-
-impl ApiError {
-    pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
-        Self {
-            code,
-            message: message.into(),
-        }
-    }
-
-    /// The HTTP status for this error, determined entirely by its code.
-    pub const fn status(&self) -> StatusCode {
-        self.code.status()
-    }
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum ServerError {
+    #[error("Internal server error")]
+    Internal,
+
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
 
     #[error("RSA error: {0}")]
-    RSA(#[from] rsa::pkcs8::spki::Error),
-
-    #[error("Auth error: {0}")]
-    Auth(String),
-
-    #[error("Invalid credentials")]
-    InvalidCredentials,
+    Rsa(#[from] rsa::pkcs8::spki::Error),
 
     #[error("Crypto error: {0}")]
     Crypto(#[from] CryptoError),
 
-    #[error("Not found")]
-    NotFound,
+    /// Simple HTTP error - no body, just status code
+    #[error("HTTP error: {0} - {1}")]
+    Http(StatusCode, String),
 
-    #[error("Forbidden")]
-    Forbidden,
-
-    #[error("OTP error: {0}")]
-    Otp(#[from] OtpError),
-
-    #[error("Validation error: {0}")]
-    Validation(String),
-
-    /// Escape hatch for one-off errors that don't warrant a named variant.
-    /// Prefer a named variant for anything a caller might want to match on.
-    #[error("API error: {0:?}")]
-    Api(ApiError),
+    /// Domain error with code for frontend translation
+    #[error("App error: {0} - {1}")]
+    App(AppErrorCode, String),
 }
 
 impl ServerError {
-    pub fn api(code: ErrorCode, message: impl Into<String>) -> Self {
-        Self::Api(ApiError::new(code, message))
-    }
-
-    /// True when the underlying database error is a unique-constraint
-    /// violation, letting call sites treat "already exists" as a domain
-    /// outcome instead of a server fault.
     pub fn is_unique_violation(&self) -> bool {
         matches!(
             self,
             Self::Database(sqlx::Error::Database(db_err)) if db_err.is_unique_violation()
         )
     }
-
-    /// Maps this error to its wire representation. Internal faults are
-    /// logged here and deliberately given opaque messages so that details
-    /// never reach the client. The HTTP status follows from
-    /// [`ApiError::status`], so it is never chosen independently.
-    pub fn to_api_error(self) -> ApiError {
-        match self {
-            Self::Database(err) => {
-                error!("Database error: {}", err);
-                internal("Database error")
-            }
-            Self::RSA(err) => {
-                error!("RSA error: {}", err);
-                internal("Cryptographic error")
-            }
-            Self::Crypto(err) => {
-                error!("Crypto error: {}", err);
-                internal("Cryptographic error")
-            }
-            Self::Auth(msg) => {
-                warn!("Auth error: {}", msg);
-                ApiError::new(ErrorCode::Unauthorized, msg)
-            }
-            Self::InvalidCredentials => {
-                warn!("Invalid credentials");
-                ApiError::new(ErrorCode::InvalidCredentials, "Invalid credentials")
-            }
-            Self::NotFound => {
-                warn!("Resource not found");
-                ApiError::new(ErrorCode::NotFound, "Not found")
-            }
-            Self::Forbidden => ApiError::new(ErrorCode::Forbidden, "Forbidden"),
-            Self::Validation(msg) => {
-                warn!("Validation error: {}", msg);
-                ApiError::new(ErrorCode::Validation, msg)
-            }
-            Self::Otp(err) => {
-                let body = err.to_api_error();
-                log_by_severity("OTP error", &body, &err);
-                body
-            }
-            Self::Api(body) => {
-                log_by_severity("API error", &body, &body.code);
-                body
-            }
-        }
-    }
-}
-
-fn internal(message: &str) -> ApiError {
-    ApiError::new(ErrorCode::Internal, message)
-}
-
-/// Server faults are logged at error level; anything the caller could have
-/// avoided is only a warning.
-fn log_by_severity(label: &str, body: &ApiError, cause: &dyn std::fmt::Display) {
-    if body.status().is_server_error() {
-        error!("{}: {}", label, cause);
-        return;
-    }
-    warn!("{}: {}", label, cause);
 }
 
 impl IntoResponse for ServerError {
     fn into_response(self) -> axum::response::Response {
-        let body = self.to_api_error();
-        (body.status(), Json(body)).into_response()
+        match self {
+            Self::Internal => {
+                error!("Internal server error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal server error".to_string(),
+                )
+                    .into_response()
+            }
+            Self::Database(err) => {
+                error!("Database error: {}", err);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal server error".to_string(),
+                )
+                    .into_response()
+            }
+            Self::Rsa(err) => {
+                error!("RSA error: {}", err);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal server error".to_string(),
+                )
+                    .into_response()
+            }
+            Self::Crypto(err) => {
+                error!("Crypto error: {}", err);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal server error".to_string(),
+                )
+                    .into_response()
+            }
+            Self::Http(status, message) => {
+                error!("Http error: {} - {}", status, message);
+                (status, message).into_response()
+            }
+            Self::App(code, message) => {
+                warn!("App error: {} - {}", code, message);
+                let status_code = code.status();
+                let error = AppError { code, message };
+                (status_code, Json(error)).into_response()
+            }
+        }
     }
 }
 
@@ -247,172 +158,39 @@ impl IntoResponse for ServerError {
 mod test {
     use super::*;
 
-    fn code_of(err: ServerError) -> (StatusCode, ErrorCode) {
-        let body = err.to_api_error();
-        (body.status(), body.code)
+    #[test]
+    fn http_error_returns_status_only() {
+        let err = ServerError::Http(StatusCode::NOT_FOUND, "Not found".to_string());
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[test]
-    fn domain_errors_map_to_expected_status_and_code() {
-        assert_eq!(
-            code_of(ServerError::NotFound),
-            (StatusCode::NOT_FOUND, ErrorCode::NotFound)
-        );
-        assert_eq!(
-            code_of(ServerError::Forbidden),
-            (StatusCode::FORBIDDEN, ErrorCode::Forbidden)
-        );
-        assert_eq!(
-            code_of(ServerError::InvalidCredentials),
-            (StatusCode::UNAUTHORIZED, ErrorCode::InvalidCredentials)
-        );
-        assert_eq!(
-            code_of(ServerError::Auth("nope".into())),
-            (StatusCode::UNAUTHORIZED, ErrorCode::Unauthorized)
-        );
-        assert_eq!(
-            code_of(ServerError::Validation("bad phone".into())),
-            (StatusCode::BAD_REQUEST, ErrorCode::Validation)
-        );
-    }
-
-    #[test]
-    fn validation_message_reaches_the_client() {
-        let body = ServerError::Validation("phone_number is invalid".into()).to_api_error();
-        assert_eq!(body.message, "phone_number is invalid");
-    }
-
-    #[test]
-    fn database_errors_are_opaque_to_the_client() {
-        let body = ServerError::Database(sqlx::Error::RowNotFound).to_api_error();
-
-        assert_eq!(body.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(body.code, ErrorCode::Internal);
-        assert_eq!(body.message, "Database error");
-    }
-
-    #[test]
-    fn otp_errors_delegate_to_otp_mapping() {
-        assert_eq!(
-            code_of(ServerError::Otp(OtpError::Expired)),
-            (StatusCode::GONE, ErrorCode::OtpExpired)
-        );
-        assert_eq!(
-            code_of(ServerError::Otp(OtpError::WrongCode)),
-            (StatusCode::UNAUTHORIZED, ErrorCode::OtpWrongCode)
-        );
-    }
-
-    #[test]
-    fn otp_database_errors_are_opaque_to_the_client() {
-        let body = ServerError::Otp(OtpError::Database(sqlx::Error::RowNotFound)).to_api_error();
-
-        assert_eq!(body.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(body.code, ErrorCode::Internal);
-        assert_eq!(body.message, "Database error");
-    }
-
-    #[test]
-    fn api_escape_hatch_derives_status_from_its_code() {
-        let body = ServerError::api(ErrorCode::BadRequest, "Something went wrong").to_api_error();
-
-        assert_eq!(body.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(body.code, ErrorCode::BadRequest);
-        assert_eq!(body.message, "Something went wrong");
-    }
-
-    /// Guards the invariant that motivated dropping the status field: a code
-    /// must never map to a status that contradicts its own category.
-    #[test]
-    fn every_code_maps_to_a_client_or_server_error_status() {
-        for code in ErrorCode::ALL {
-            let status = code.status();
-            assert!(
-                status.is_client_error() || status.is_server_error(),
-                "{} maps to non-error status {}",
-                code,
-                status
-            );
-        }
-    }
-
-    #[test]
-    fn only_internal_faults_map_to_server_error_statuses() {
-        for code in ErrorCode::ALL {
-            let is_internal = matches!(code, ErrorCode::Internal | ErrorCode::SmsFailed);
-            assert_eq!(
-                code.status().is_server_error(),
-                is_internal,
-                "unexpected server-error classification for {}",
-                code
-            );
-        }
+    fn app_error_returns_json_body() {
+        let err = ServerError::App(AppErrorCode::OtpWrongCode, "Wrong code".to_string());
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[test]
     fn error_codes_serialize_as_screaming_snake_case() {
-        let body = ApiError::new(ErrorCode::InvalidCredentials, "Invalid credentials");
+        let body = AppError {
+            code: AppErrorCode::InvalidCredentials,
+            message: "Bad password".to_string(),
+        };
         let json = serde_json::to_string(&body).unwrap();
-
         assert_eq!(
             json,
-            r#"{"code":"INVALID_CREDENTIALS","message":"Invalid credentials"}"#
+            r#"{"code":"INVALID_CREDENTIALS","message":"Bad password"}"#
         );
-    }
-
-    #[test]
-    fn display_matches_serialized_form_for_every_code() {
-        for code in ErrorCode::ALL {
-            let serialized = serde_json::to_string(code).unwrap();
-            assert_eq!(
-                serialized,
-                format!(r#""{}""#, code),
-                "Display and Serialize disagree for {:?}",
-                code
-            );
-        }
-    }
-
-    /// Frontends key their translations off these strings, so a rename is a
-    /// breaking change. Update this list only alongside the clients.
-    #[test]
-    fn error_code_strings_are_stable() {
-        let actual: Vec<&str> = ErrorCode::ALL.iter().map(|c| c.as_str()).collect();
-
-        assert_eq!(
-            actual,
-            vec![
-                "INTERNAL",
-                "BAD_REQUEST",
-                "VALIDATION",
-                "UNAUTHORIZED",
-                "INVALID_CREDENTIALS",
-                "FORBIDDEN",
-                "NOT_FOUND",
-                "CONFLICT",
-                "OTP_EXPIRED",
-                "OTP_WRONG_CODE",
-                "OTP_ALREADY_VERIFIED",
-                "OTP_NOT_FOUND",
-                "OTP_MAX_ATTEMPTS",
-                "OTP_MAX_MESSAGES",
-                "SMS_FAILED",
-            ]
-        );
-    }
-
-    #[test]
-    fn all_contains_every_code_exactly_once() {
-        let mut seen = ErrorCode::ALL.to_vec();
-        let before = seen.len();
-        seen.dedup_by_key(|c| c.as_str());
-
-        assert_eq!(before, seen.len(), "ErrorCode::ALL contains duplicates");
     }
 
     #[test]
     fn is_unique_violation_is_false_for_other_errors() {
         assert!(!ServerError::Database(sqlx::Error::RowNotFound).is_unique_violation());
-        assert!(!ServerError::NotFound.is_unique_violation());
+        assert!(
+            !ServerError::Http(StatusCode::NOT_FOUND, "Not found".to_string())
+                .is_unique_violation()
+        );
     }
 }

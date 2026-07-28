@@ -25,8 +25,10 @@ secret = "dev-secret-change-in-production"
 [comms]
 username = ""  # Set via APP__COMMS__USERNAME env var
 password = ""  # Set via APP__COMMS__PASSWORD env var
-from = "Auth67"
+from_phone = "Auth67"
+from_email = "auth67@resend.dev"
 otp_message_template = "Your verification code is {code}"
+otp_email_subject = "Your verification code"
 resend_api_key = ""  # Set via APP__COMMS__RESEND_API_KEY env var
 
 [audit]

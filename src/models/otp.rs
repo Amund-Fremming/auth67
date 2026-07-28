@@ -5,68 +5,22 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use validator::{Validate, ValidationError};
 
-use crate::error::{ApiError, ErrorCode};
 use crate::models::auth::ProviderType;
-
-#[derive(Debug, thiserror::Error)]
-pub enum OtpError {
-    #[error("SMS failed to send")]
-    SmsFailed,
-
-    #[error("OTP expired")]
-    Expired,
-
-    #[error("OTP already verified")]
-    AlreadyVerified,
-
-    #[error("Max attempts exceeded")]
-    MaxAttemptsExceeded,
-
-    #[error("Wrong code")]
-    WrongCode,
-
-    #[error("OTP not found")]
-    NotFound,
-
-    #[error("Max messages per day exceeded")]
-    MaxMessagesExceeded,
-
-    #[error("Database error: {0}")]
-    Database(#[from] sqlx::Error),
-}
-
-impl OtpError {
-    pub fn to_api_error(&self) -> ApiError {
-        let code = match self {
-            Self::Expired => ErrorCode::OtpExpired,
-            Self::MaxAttemptsExceeded => ErrorCode::OtpMaxAttempts,
-            Self::MaxMessagesExceeded => ErrorCode::OtpMaxMessages,
-            Self::WrongCode => ErrorCode::OtpWrongCode,
-            Self::AlreadyVerified => ErrorCode::OtpAlreadyVerified,
-            Self::NotFound => ErrorCode::OtpNotFound,
-            Self::SmsFailed => ErrorCode::SmsFailed,
-            // Internal fault: keep the cause out of the response body
-            Self::Database(_) => ErrorCode::Internal,
-        };
-
-        let message = match self {
-            Self::Database(_) => "Database error".to_string(),
-            other => other.to_string(),
-        };
-
-        ApiError::new(code, message)
-    }
-}
+use crate::models::user::validate_identifier;
 
 #[derive(Debug, Serialize)]
 pub struct OtpResponse {
     pub otp_id: Uuid,
 }
 
+fn validate_otp_request(req: &CreateOtpRequest) -> Result<(), ValidationError> {
+    validate_identifier(req.provider_type, &req.identifier)
+}
+
 #[derive(Debug, Serialize, Deserialize, Validate)]
+#[validate(schema(function = "validate_otp_request"))]
 pub struct CreateOtpRequest {
-    #[validate(custom(function = "validate_phone"))]
-    pub phone_number: String,
+    pub identifier: String,
     pub provider_type: ProviderType,
 }
 
@@ -75,13 +29,6 @@ pub struct VerifyOtpRequest {
     pub otp_id: Uuid,
     #[validate(custom(function = "validate_otp_code"))]
     pub code: String,
-}
-
-fn validate_phone(phone: &str) -> Result<(), ValidationError> {
-    if !crate::PHONE_REGEX.is_match(phone) {
-        return Err(ValidationError::new("invalid_phone"));
-    }
-    Ok(())
 }
 
 fn validate_otp_code(code: &str) -> Result<(), ValidationError> {

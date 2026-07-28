@@ -4,12 +4,13 @@ use chrono::Utc;
 use sqlx::{Pool, Postgres};
 use uuid::Uuid;
 
+use crate::error::{AppErrorCode, ServerError};
 use crate::models::{
     auth::ProviderType,
-    otp::{Otp, OtpError, OtpResponse},
+    otp::{Otp, OtpResponse},
 };
 
-pub async fn get_otp_by_id(pool: &Pool<Postgres>, id: Uuid) -> Result<Otp, OtpError> {
+pub async fn get_otp_by_id(pool: &Pool<Postgres>, id: Uuid) -> Result<Otp, ServerError> {
     let otp = sqlx::query_as!(
         Otp,
         r#"
@@ -24,7 +25,10 @@ pub async fn get_otp_by_id(pool: &Pool<Postgres>, id: Uuid) -> Result<Otp, OtpEr
 
     match otp {
         Some(otp) => Ok(otp),
-        None => Err(OtpError::NotFound),
+        None => Err(ServerError::App(
+            AppErrorCode::OtpNotFound,
+            "OTP not found".to_string(),
+        )),
     }
 }
 
@@ -32,7 +36,7 @@ pub async fn get_otp_by_identifier(
     pool: &Pool<Postgres>,
     identifier: &str,
     provider_type: ProviderType,
-) -> Result<Otp, OtpError> {
+) -> Result<Otp, ServerError> {
     let otp = sqlx::query_as!(
         Otp,
         r#"
@@ -50,7 +54,10 @@ pub async fn get_otp_by_identifier(
 
     match otp {
         Some(otp) => Ok(otp),
-        None => Err(OtpError::NotFound),
+        None => Err(ServerError::App(
+            AppErrorCode::OtpNotFound,
+            "OTP not found".to_string(),
+        )),
     }
 }
 
@@ -127,12 +134,15 @@ pub async fn create_otp(
     hash: &str,
     ttl_minutes: u8,
     max_messages_per_day: i64,
-) -> Result<OtpResponse, OtpError> {
+) -> Result<OtpResponse, ServerError> {
     let expires_at = Utc::now() + Duration::from_mins(ttl_minutes as u64);
 
     let otp_today = get_otp_count_today(pool, identifier, provider_type).await?;
     if otp_today >= max_messages_per_day {
-        return Err(OtpError::MaxMessagesExceeded);
+        return Err(ServerError::App(
+            AppErrorCode::OtpMaxMessages,
+            "Max messages per day exceeded".to_string(),
+        ));
     }
 
     let otp_id = sqlx::query_scalar!(

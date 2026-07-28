@@ -17,6 +17,9 @@ async fn me(
     let user_id = claims.user_id()?;
     match db::user::get_user(state.get_pool(), user_id).await? {
         Some(user) => Ok((StatusCode::OK, Json(user))),
-        None => Err(ServerError::NotFound),
+        None => Err(ServerError::Http(
+            StatusCode::NOT_FOUND,
+            "User not found".to_string(),
+        )),
     }
 }

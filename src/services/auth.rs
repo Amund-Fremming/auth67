@@ -9,6 +9,8 @@ use sqlx::{Pool, Postgres};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
+use axum::http::StatusCode;
+
 use crate::{
     config::AuthConfig,
     db::{
@@ -20,11 +22,11 @@ use crate::{
         },
         otp::get_otp_by_id,
     },
-    error::{ErrorCode, ServerError},
+    error::{AppErrorCode, ServerError},
     models::{
         audit::{Action, AuditBuilder, ResourceType},
         auth::{Claims, Jwk, Jwks, ProviderType, TokenResponse},
-        user::User,
+        user::{User, normalize_phone},
     },
     ports::crypto::CryptoPort,
 };
@@ -32,18 +34,6 @@ use crate::{
 /// Dummy Argon2 hash for timing-safe login.
 /// Used when user not found to prevent timing oracle attacks.
 const DUMMY_PASSWORD_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$ZHVtbXlzYWx0Zm9ydGltaW5n$K8H8X3Q9Z5Y2W1V0U9T8S7R6Q5P4O3N2M1L0K9J8I7H6";
-
-/// Deliberately vague so signup responses never confirm whether an
-/// identifier is already registered.
-fn identifier_in_use_error() -> ServerError {
-    ServerError::api(ErrorCode::BadRequest, "Something went wrong")
-}
-
-fn strip_country_code(phone: &str) -> String {
-    let digits: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
-    let local_len = 8.min(digits.len());
-    digits[digits.len() - local_len..].to_string()
-}
 
 pub struct AuthService {
     config: AuthConfig,
@@ -76,11 +66,15 @@ impl AuthService {
         audience: &str,
         issuer: &str,
     ) -> Result<Self, ServerError> {
-        let encoding_key = EncodingKey::from_rsa_pem(private_key_pem.as_bytes())
-            .map_err(|e| ServerError::Auth(format!("Invalid private key: {}", e)))?;
+        let encoding_key = EncodingKey::from_rsa_pem(private_key_pem.as_bytes()).map_err(|e| {
+            error!("Invalid private key: {}", e);
+            ServerError::Internal
+        })?;
 
-        let decoding_key = DecodingKey::from_rsa_pem(public_key_pem.as_bytes())
-            .map_err(|e| ServerError::Auth(format!("Invalid public key: {}", e)))?;
+        let decoding_key = DecodingKey::from_rsa_pem(public_key_pem.as_bytes()).map_err(|e| {
+            error!("Invalid public key: {}", e);
+            ServerError::Internal
+        })?;
 
         let jwk = Jwk::new("key-1", public_key_pem)?;
         let jwks = Jwks { keys: [jwk] };
@@ -110,7 +104,7 @@ impl AuthService {
         let token_data =
             decode::<Claims>(token, &self.decoding_key, &self.validation).map_err(|e| {
                 warn!("Token validation failed: {}", e);
-                ServerError::Auth("Invalid token".to_string())
+                ServerError::Http(StatusCode::UNAUTHORIZED, "Invalid token".to_string())
             })?;
 
         let claims = token_data.claims;
@@ -129,8 +123,13 @@ impl AuthService {
         };
 
         let header = Header::new(Algorithm::RS256);
-        let access_token = encode(&header, &claims, &self.encoding_key)
-            .map_err(|e| ServerError::Auth(format!("Failed to encode AT: {:?}", e)))?;
+        let access_token = encode(&header, &claims, &self.encoding_key).map_err(|e| {
+            error!("Failed to encode AT: {:?}", e);
+            ServerError::Http(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".to_string(),
+            )
+        })?;
 
         Ok(access_token)
     }
@@ -191,17 +190,23 @@ impl AuthService {
         let otp = get_otp_by_id(&self.pool, otp_id).await?;
 
         if !otp.is_verified() {
-            return Err(ServerError::Auth("Phone number not verified".to_string()));
+            return Err(ServerError::Http(
+                StatusCode::BAD_REQUEST,
+                "Something went wrong".to_string(),
+            ));
         }
 
         let normalized_identifier = match provider_type {
-            ProviderType::Phone => strip_country_code(&otp.identifier.clone()),
+            ProviderType::Phone => normalize_phone(&otp.identifier),
             ProviderType::Email => otp.identifier.clone(),
         };
 
         if is_identifier_in_use(&self.pool, provider_type, &normalized_identifier).await? {
             warn!("Signup attempted with identifier already in use");
-            return Err(identifier_in_use_error());
+            return Err(ServerError::Http(
+                StatusCode::BAD_REQUEST,
+                "Something went wrong".to_string(),
+            ));
         }
 
         let mut user = User::new(given_name, family_name);
@@ -226,7 +231,10 @@ impl AuthService {
                 .map_err(|e| {
                     if e.is_unique_violation() {
                         warn!("Signup lost race: identifier registered concurrently");
-                        identifier_in_use_error()
+                        ServerError::Http(
+                            StatusCode::BAD_REQUEST,
+                            "Something went wrong".to_string(),
+                        )
                     } else {
                         e
                     }
@@ -284,12 +292,18 @@ impl AuthService {
 
         let Some(login_object) = login_object else {
             warn!(device_id = %device_id, "Login failed: user not found");
-            return Err(ServerError::InvalidCredentials);
+            return Err(ServerError::App(
+                AppErrorCode::InvalidCredentials,
+                "Invalid credentials".to_string(),
+            ));
         };
 
         if login_object.is_locked() {
             warn!(identifier = %identifier, "Login failed: account locked");
-            return Err(ServerError::InvalidCredentials);
+            return Err(ServerError::App(
+                AppErrorCode::InvalidCredentials,
+                "Invalid credentials".to_string(),
+            ));
         }
 
         if !is_valid {
@@ -305,7 +319,10 @@ impl AuthService {
                 warn!(user_id = %login_object.user_id, "Account locked due to max failed attempts");
             }
 
-            return Err(ServerError::InvalidCredentials);
+            return Err(ServerError::App(
+                AppErrorCode::InvalidCredentials,
+                "Invalid credentials".to_string(),
+            ));
         }
 
         reset_failed_attempts(&self.pool, login_object.identity_id).await?;
@@ -360,12 +377,16 @@ impl AuthService {
                 provider_type = %provider_type,
                 "User tried setting password on non existent provider type"
             );
-            return Err(ServerError::Forbidden);
+            return Err(ServerError::Http(
+                StatusCode::FORBIDDEN,
+                "Provider type does not exist".to_string(),
+            ));
         };
 
         if old_password == new_password {
-            return Err(ServerError::Auth(
-                "New password must differ from current".to_string(),
+            return Err(ServerError::App(
+                AppErrorCode::PasswordSameAsOld,
+                "New password cannot be the same as old password".to_string(),
             ));
         }
 
@@ -380,7 +401,10 @@ impl AuthService {
                 provider_type = %provider_type,
                 "User tried setting new password with invalid old password"
             );
-            return Err(ServerError::Forbidden);
+            return Err(ServerError::Http(
+                StatusCode::FORBIDDEN,
+                "Invalid password".to_string(),
+            ));
         }
 
         let new_password_hash = self.crypto.hash_password(new_password)?;
@@ -405,7 +429,10 @@ impl AuthService {
                 device_id = %device_id,
                 "Requested refresh token does not exist"
             );
-            return Err(ServerError::Forbidden);
+            return Err(ServerError::Http(
+                StatusCode::FORBIDDEN,
+                "Refresh token does not exist".to_string(),
+            ));
         };
 
         let user_id = session.user_id;
@@ -420,7 +447,10 @@ impl AuthService {
                 "Invalid refresh token, invalidating session"
             );
             db::auth::expire_session(&self.pool, device_id).await?;
-            return Err(ServerError::Forbidden);
+            return Err(ServerError::Http(
+                StatusCode::FORBIDDEN,
+                "Invalid refresh token".to_string(),
+            ));
         }
 
         let at = self.generate_access_token(user_id)?;
@@ -437,7 +467,10 @@ impl AuthService {
     pub async fn logout(&self, user_id: Uuid, device_id: Uuid) -> Result<(), ServerError> {
         let Some(session) = db::auth::get_session(&self.pool, device_id).await? else {
             warn!(device_id = %device_id, "Logout attempted for non-existent session");
-            return Err(ServerError::NotFound);
+            return Err(ServerError::Http(
+                StatusCode::NOT_FOUND,
+                "Session does not exist".to_string(),
+            ));
         };
 
         if session.user_id != user_id {
@@ -446,7 +479,10 @@ impl AuthService {
                 "Logout attempted for session owned by another user",
             );
             warn!(user_id = %user_id, device_id = %device_id, "Logout attempted for session not owned by user");
-            return Err(ServerError::Forbidden);
+            return Err(ServerError::Http(
+                StatusCode::FORBIDDEN,
+                "Forbidden".to_string(),
+            ));
         }
 
         db::auth::expire_session(&self.pool, device_id).await?;
@@ -470,90 +506,6 @@ impl AuthService {
 
 #[cfg(test)]
 mod test {
-    /*
-    ## new (constructor)
-    - new succeeds with valid RSA keys
-    - new fails with invalid private key PEM
-    - new fails with invalid public key PEM
-    - new fails when Jwk construction fails
-
-    ## get_jwks
-    - get_jwks returns the JWKS with both keys
-    - get_jwks returns keys with distinct kids
-
-    ## validate_token
-    - validate_token succeeds with valid token and returns claims
-    - validate_token fails with expired token
-    - validate_token fails with invalid signature
-    - validate_token fails with wrong audience
-    - validate_token fails with wrong issuer
-    - validate_token rejects malformed tokens
-    - validate_token rejects alg=none and HS256-signed tokens (algorithm confusion)
-    - validate_token rejects tokens missing sub
-
-    ## signup
-    - signup succeeds with phone provider and returns token response
-    - signup succeeds with email provider and returns token response
-    - signup fails when OTP not found
-    - signup fails when OTP is not verified
-    - signup fails when identifier already in use (phone)
-    - signup fails when identifier already in use (email)
-    - signup sets phone_number and phone_number_verified for phone provider
-    - signup sets email and email_verified for email provider
-    - signup creates identity with the requested provider type (not always Phone)
-    - signup rolls back user row when credential creation fails
-    - signup rejects reuse of an already-consumed otp_id
-    - signup persists session with device_name/user_agent and a hash matching the returned RT
-    - signup succeeds with user_agent = None
-
-    ## login
-    - login succeeds with phone provider and creates new session
-    - login succeeds with email provider and creates new session
-    - login succeeds and updates existing session for known device
-    - login fails when identifier not found (phone)
-    - login fails when identifier not found (email)
-    - login fails when account is locked
-    - login fails when password is invalid
-    - login locks account after max failed attempts reached
-    - login increments failed_attempts without locking below max
-    - login succeeds when locked_until has expired
-    - login resets failed_attempts after success following failures
-    - login propagates crypto verify_password errors
-    - login writes a success audit log
-    - login fails when identifier does not match provider_type
-    - login succeeds with user_agent = None
-
-    ## set_password
-    - set_password succeeds with valid old password
-    - set_password fails when credential not found for provider
-    - set_password fails when old password equals new password
-    - set_password fails when old password is invalid
-    - set_password: new password verifies and old password is rejected afterwards
-    - set_password propagates crypto verify errors
-
-    ## refresh_token
-    - refresh_token succeeds and returns new token pair
-    - refresh_token fails when session not found for device
-    - refresh_token fails and expires session when token is invalid
-    - refresh_token updates session with new token hash after rotation
-    - refresh_token fails when session is expired
-    - refresh_token fails when session is revoked
-    - refresh_token rejects a rotated (replayed) token and expires the session
-
-    ## logout
-    - logout succeeds and session becomes inactive
-    - logout fails when session not found
-    - logout fails when session owned by another user
-    - refresh_token fails after logout
-    - session shows as inactive in list after logout
-
-    ## tokens
-    - access token exp equals now + access_token_lifetime_minutes * 60
-    - refresh token expiry equals now + refresh_token_lifetime_days
-    - generate_refresh_token produces distinct 32-byte URL-safe values
-    - token_response lifetimes agree with the values used to mint the tokens
-    */
-
     use super::*;
     use crate::config::AuthConfig;
     use crate::ports::crypto::MockCryptoPort;
@@ -662,7 +614,7 @@ tBkZIjFGA4t6duE5OAPX9muXdFFcLsTsgU/UFVgu2Tf83+jgsqsq2qV6JymAXZFi
 
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(matches!(err, ServerError::Auth(_)));
+        assert!(matches!(err, ServerError::Internal));
     }
 
     #[tokio::test]
@@ -683,7 +635,7 @@ tBkZIjFGA4t6duE5OAPX9muXdFFcLsTsgU/UFVgu2Tf83+jgsqsq2qV6JymAXZFi
 
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(matches!(err, ServerError::Auth(_)));
+        assert!(matches!(err, ServerError::Internal));
     }
 
     #[tokio::test]
@@ -738,7 +690,10 @@ tBkZIjFGA4t6duE5OAPX9muXdFFcLsTsgU/UFVgu2Tf83+jgsqsq2qV6JymAXZFi
         let result = service.validate_token(&expired_token);
 
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ServerError::Auth(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            ServerError::Http(StatusCode::UNAUTHORIZED, _)
+        ));
     }
 
     #[tokio::test]
@@ -762,7 +717,10 @@ tBkZIjFGA4t6duE5OAPX9muXdFFcLsTsgU/UFVgu2Tf83+jgsqsq2qV6JymAXZFi
         let result = service.validate_token(&token);
 
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ServerError::Auth(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            ServerError::Http(StatusCode::UNAUTHORIZED, _)
+        ));
     }
 
     #[tokio::test]
@@ -785,7 +743,10 @@ tBkZIjFGA4t6duE5OAPX9muXdFFcLsTsgU/UFVgu2Tf83+jgsqsq2qV6JymAXZFi
         let result = service.validate_token(&token);
 
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ServerError::Auth(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            ServerError::Http(StatusCode::UNAUTHORIZED, _)
+        ));
     }
 
     #[tokio::test]
@@ -795,7 +756,10 @@ tBkZIjFGA4t6duE5OAPX9muXdFFcLsTsgU/UFVgu2Tf83+jgsqsq2qV6JymAXZFi
         let result = service.validate_token("not.a.valid.jwt");
 
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ServerError::Auth(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            ServerError::Http(StatusCode::UNAUTHORIZED, _)
+        ));
     }
 
     #[tokio::test]
@@ -805,7 +769,10 @@ tBkZIjFGA4t6duE5OAPX9muXdFFcLsTsgU/UFVgu2Tf83+jgsqsq2qV6JymAXZFi
         let result = service.validate_token("");
 
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ServerError::Auth(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            ServerError::Http(StatusCode::UNAUTHORIZED, _)
+        ));
     }
 
     #[tokio::test]
@@ -952,7 +919,10 @@ tBkZIjFGA4t6duE5OAPX9muXdFFcLsTsgU/UFVgu2Tf83+jgsqsq2qV6JymAXZFi
         let result = service.validate_token(&token);
 
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ServerError::Auth(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            ServerError::Http(StatusCode::UNAUTHORIZED, _)
+        ));
     }
 
     #[tokio::test]
@@ -989,7 +959,10 @@ tBkZIjFGA4t6duE5OAPX9muXdFFcLsTsgU/UFVgu2Tf83+jgsqsq2qV6JymAXZFi
         let result = service.validate_token(&token);
 
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ServerError::Auth(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            ServerError::Http(StatusCode::UNAUTHORIZED, _)
+        ));
     }
 
     #[tokio::test]
@@ -1031,7 +1004,10 @@ tBkZIjFGA4t6duE5OAPX9muXdFFcLsTsgU/UFVgu2Tf83+jgsqsq2qV6JymAXZFi
         let result = service.validate_token(&token);
 
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ServerError::Auth(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            ServerError::Http(StatusCode::UNAUTHORIZED, _)
+        ));
     }
 
     fn create_integration_test_service(pool: Pool<Postgres>) -> AuthService {
@@ -1099,7 +1075,10 @@ tBkZIjFGA4t6duE5OAPX9muXdFFcLsTsgU/UFVgu2Tf83+jgsqsq2qV6JymAXZFi
         let result = service.logout(user_id, device_id).await;
 
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ServerError::NotFound));
+        assert!(matches!(
+            result.unwrap_err(),
+            ServerError::Http(StatusCode::NOT_FOUND, _)
+        ));
     }
 
     #[sqlx::test]
@@ -1145,7 +1124,10 @@ tBkZIjFGA4t6duE5OAPX9muXdFFcLsTsgU/UFVgu2Tf83+jgsqsq2qV6JymAXZFi
         let result = service.logout(user_id, device_id).await;
 
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ServerError::Forbidden));
+        assert!(matches!(
+            result.unwrap_err(),
+            ServerError::Http(StatusCode::FORBIDDEN, _)
+        ));
     }
 
     #[sqlx::test]
@@ -1186,7 +1168,10 @@ tBkZIjFGA4t6duE5OAPX9muXdFFcLsTsgU/UFVgu2Tf83+jgsqsq2qV6JymAXZFi
         let result = service.refresh_token(device_id, refresh_token).await;
 
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ServerError::Forbidden));
+        assert!(matches!(
+            result.unwrap_err(),
+            ServerError::Http(StatusCode::FORBIDDEN, _)
+        ));
     }
 
     #[sqlx::test]
@@ -1292,7 +1277,7 @@ tBkZIjFGA4t6duE5OAPX9muXdFFcLsTsgU/UFVgu2Tf83+jgsqsq2qV6JymAXZFi
 
         assert!(result.is_ok(), "signup failed: {:?}", result.err());
         assert!(
-            is_identifier_in_use(&pool, ProviderType::Phone, "+4712345678")
+            is_identifier_in_use(&pool, ProviderType::Phone, "12345678")
                 .await
                 .unwrap()
         );
@@ -1332,9 +1317,7 @@ tBkZIjFGA4t6duE5OAPX9muXdFFcLsTsgU/UFVgu2Tf83+jgsqsq2qV6JymAXZFi
             .await;
 
         let err = result.expect_err("second signup should be rejected");
-        let body = err.to_api_error();
-        assert_eq!(body.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(body.code, ErrorCode::BadRequest);
+        assert!(matches!(err, ServerError::Http(StatusCode::BAD_REQUEST, _)));
 
         // The rejected signup must not have left a second user behind
         let user_count: i64 = sqlx::query_scalar!(r#"SELECT COUNT(*) as "count!" FROM "user""#)
@@ -1444,7 +1427,10 @@ tBkZIjFGA4t6duE5OAPX9muXdFFcLsTsgU/UFVgu2Tf83+jgsqsq2qV6JymAXZFi
             )
             .await;
 
-        assert!(matches!(result.unwrap_err(), ServerError::Auth(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            ServerError::Http(StatusCode::BAD_REQUEST, _)
+        ));
     }
 
     #[sqlx::test]

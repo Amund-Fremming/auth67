@@ -7,9 +7,10 @@ use uuid::Uuid;
 use crate::{
     config::{CommsConfig, OtpConfig},
     db,
+    error::{AppErrorCode, ServerError},
     models::{
         auth::ProviderType,
-        otp::{Otp, OtpError, OtpResponse},
+        otp::{Otp, OtpResponse},
     },
     ports::{comms::CommsPort, crypto::CryptoPort},
 };
@@ -41,15 +42,16 @@ impl OtpService {
 
     pub async fn create_and_send(
         &self,
-        phone_number: &str,
+        identifier: &str,
         provider_type: ProviderType,
-    ) -> Result<OtpResponse, OtpError> {
+    ) -> Result<OtpResponse, ServerError> {
         let code = Otp::generate_code();
+        println!("🚨 Code {}", code);
         let hash = self.crypto.hash(&code);
 
         let response = db::otp::create_otp(
             &self.pool,
-            phone_number,
+            identifier,
             provider_type,
             &hash,
             self.config.ttl_minutes,
@@ -62,11 +64,26 @@ impl OtpService {
             .otp_message_template
             .replace("{code}", &code);
 
-        if let Err(e) = self
-            .comms
-            .send_sms(&self.comms_config.from, phone_number, &message)
-            .await
-        {
+        let result = match provider_type {
+            ProviderType::Phone => self
+                .comms
+                .send_sms(&self.comms_config.from_phone, identifier, &message)
+                .await
+                .map(|_| ()),
+            ProviderType::Email => self
+                .comms
+                .send_email(
+                    &self.comms_config.from_email,
+                    &[identifier],
+                    &self.comms_config.otp_email_subject,
+                    Some(&message),
+                    None,
+                )
+                .await
+                .map(|_| ()),
+        };
+
+        if let Err(e) = result {
             error!(
                 otp_id = %response.otp_id,
                 error = %e,
@@ -74,7 +91,11 @@ impl OtpService {
             );
             db::otp::delete_otp(&self.pool, response.otp_id).await?;
 
-            return Err(OtpError::SmsFailed);
+            let (code, msg) = match provider_type {
+                ProviderType::Phone => (AppErrorCode::SmsFailed, "SMS failed to send"),
+                ProviderType::Email => (AppErrorCode::EmailFailed, "Email failed to send"),
+            };
+            return Err(ServerError::App(code, msg.to_string()));
         }
 
         info!(otp_id = %response.otp_id, "Created OTP entry");
@@ -82,19 +103,28 @@ impl OtpService {
         Ok(response)
     }
 
-    pub async fn verify(&self, otp_id: Uuid, code: &str) -> Result<(), OtpError> {
+    pub async fn verify(&self, otp_id: Uuid, code: &str) -> Result<(), ServerError> {
         let otp = db::otp::get_otp_by_id(&self.pool, otp_id).await?;
 
         if otp.is_verified() {
-            return Err(OtpError::AlreadyVerified);
+            return Err(ServerError::App(
+                AppErrorCode::OtpAlreadyVerified,
+                "OTP already verified".to_string(),
+            ));
         }
 
         if otp.is_expired() {
-            return Err(OtpError::Expired);
+            return Err(ServerError::App(
+                AppErrorCode::OtpExpired,
+                "OTP expired".to_string(),
+            ));
         }
 
         if otp.is_max_attempts_exceeded(self.config.max_attempts as i32) {
-            return Err(OtpError::WrongCode); // Hide lock state from attacker
+            return Err(ServerError::App(
+                AppErrorCode::OtpWrongCode,
+                "Wrong code".to_string(),
+            )); // Hide lock state from attacker
         }
 
         let valid_code = self.crypto.verify(code, &otp.hash);
@@ -108,11 +138,14 @@ impl OtpService {
                 "Invalid code for OTP"
             );
 
-            return Err(OtpError::WrongCode);
+            return Err(ServerError::App(
+                AppErrorCode::OtpWrongCode,
+                "Wrong code".to_string(),
+            ));
         }
 
         db::otp::mark_verified(&self.pool, otp_id).await?;
-
+        println!("🚨 OTP VERIFIIED");
         Ok(())
     }
 }
@@ -127,15 +160,15 @@ mod test {
 
     use crate::{
         config::{CommsConfig, OtpConfig},
+        error::AppErrorCode,
         models::{
             auth::ProviderType,
             comms::{SendEmailResponse, SendSmsResponse},
-            otp::OtpError,
         },
         ports::comms::CommsPort,
     };
 
-    use super::OtpService;
+    use super::{OtpService, ServerError};
 
     struct MockCrypto {
         hash_value: String,
@@ -253,8 +286,10 @@ mod test {
         CommsConfig {
             username: "test".to_string(),
             password: "test".to_string(),
-            from: "+1234567890".to_string(),
+            from_phone: "+1234567890".to_string(),
+            from_email: "test@example.com".to_string(),
             otp_message_template: "Your code is {code}".to_string(),
+            otp_email_subject: "Your verification code".to_string(),
             resend_api_key: "test_key".to_string(),
         }
     }
@@ -297,7 +332,10 @@ mod test {
             .create_and_send("+4799999999", ProviderType::Phone)
             .await;
 
-        assert!(matches!(result, Err(OtpError::SmsFailed)));
+        assert!(matches!(
+            result,
+            Err(ServerError::App(AppErrorCode::SmsFailed, _))
+        ));
         assert_eq!(comms.get_call_count(), 1);
 
         // Verify no OTP records remain
@@ -334,7 +372,10 @@ mod test {
         let result = service
             .create_and_send("+4799999999", ProviderType::Phone)
             .await;
-        assert!(matches!(result, Err(OtpError::MaxMessagesExceeded)));
+        assert!(matches!(
+            result,
+            Err(ServerError::App(AppErrorCode::OtpMaxMessages, _))
+        ));
         assert_eq!(comms.get_call_count(), 2);
     }
 
@@ -373,7 +414,10 @@ mod test {
             .unwrap();
 
         let result = service.verify(response.otp_id, "wrong").await;
-        assert!(matches!(result, Err(OtpError::WrongCode)));
+        assert!(matches!(
+            result,
+            Err(ServerError::App(AppErrorCode::OtpWrongCode, _))
+        ));
 
         // Check failed_attempts incremented
         let otp: (i32,) = sqlx::query_as("SELECT failed_attempts FROM otp WHERE id = $1")
@@ -410,7 +454,10 @@ mod test {
 
         // Should return WrongCode (hides lock state)
         let result = service.verify(response.otp_id, "123456").await;
-        assert!(matches!(result, Err(OtpError::WrongCode)));
+        assert!(matches!(
+            result,
+            Err(ServerError::App(AppErrorCode::OtpWrongCode, _))
+        ));
     }
 
     #[sqlx::test]
@@ -470,7 +517,10 @@ mod test {
             .unwrap();
 
         let result = service.verify(response.otp_id, "123456").await;
-        assert!(matches!(result, Err(OtpError::Expired)));
+        assert!(matches!(
+            result,
+            Err(ServerError::App(AppErrorCode::OtpExpired, _))
+        ));
     }
 
     #[sqlx::test]
@@ -483,7 +533,10 @@ mod test {
         let fake_id = Uuid::new_v4();
         let result = service.verify(fake_id, "123456").await;
 
-        assert!(matches!(result, Err(OtpError::NotFound)));
+        assert!(matches!(
+            result,
+            Err(ServerError::App(AppErrorCode::OtpNotFound, _))
+        ));
     }
 
     #[sqlx::test]
@@ -506,7 +559,10 @@ mod test {
         // Try wrong code 3 times
         for i in 1..=3 {
             let result = service.verify(response.otp_id, "wrong").await;
-            assert!(matches!(result, Err(OtpError::WrongCode)));
+            assert!(matches!(
+                result,
+                Err(ServerError::App(AppErrorCode::OtpWrongCode, _))
+            ));
 
             let otp: (i32,) = sqlx::query_as("SELECT failed_attempts FROM otp WHERE id = $1")
                 .bind(response.otp_id)
@@ -518,7 +574,10 @@ mod test {
 
         // 4th attempt should still return WrongCode (locked but hidden)
         let result = service.verify(response.otp_id, "wrong").await;
-        assert!(matches!(result, Err(OtpError::WrongCode)));
+        assert!(matches!(
+            result,
+            Err(ServerError::App(AppErrorCode::OtpWrongCode, _))
+        ));
 
         // Failed attempts should NOT increment past max (checked before verify)
         let otp: (i32,) = sqlx::query_as("SELECT failed_attempts FROM otp WHERE id = $1")
@@ -582,7 +641,10 @@ mod test {
 
         // Second verification should fail
         let result = service.verify(response.otp_id, "123456").await;
-        assert!(matches!(result, Err(OtpError::AlreadyVerified)));
+        assert!(matches!(
+            result,
+            Err(ServerError::App(AppErrorCode::OtpAlreadyVerified, _))
+        ));
     }
 
     #[sqlx::test]
@@ -619,7 +681,10 @@ mod test {
         let result = service
             .create_and_send("+4799999999", ProviderType::Phone)
             .await;
-        assert!(matches!(result, Err(OtpError::MaxMessagesExceeded)));
+        assert!(matches!(
+            result,
+            Err(ServerError::App(AppErrorCode::OtpMaxMessages, _))
+        ));
         assert_eq!(comms.get_call_count(), 0); // SMS never sent
     }
 
@@ -642,7 +707,10 @@ mod test {
 
         // First attempt should fail (max_attempts = 0 means locked immediately)
         let result = service.verify(response.otp_id, "123456").await;
-        assert!(matches!(result, Err(OtpError::WrongCode)));
+        assert!(matches!(
+            result,
+            Err(ServerError::App(AppErrorCode::OtpWrongCode, _))
+        ));
     }
 
     #[sqlx::test]
@@ -658,7 +726,10 @@ mod test {
             .unwrap();
         let result = service.verify(response.otp_id, "").await;
 
-        assert!(matches!(result, Err(OtpError::WrongCode)));
+        assert!(matches!(
+            result,
+            Err(ServerError::App(AppErrorCode::OtpWrongCode, _))
+        ));
     }
 
     #[sqlx::test]
@@ -686,7 +757,10 @@ mod test {
         let result = service
             .create_and_send("+4799999999", ProviderType::Phone)
             .await;
-        assert!(matches!(result, Err(OtpError::MaxMessagesExceeded)));
+        assert!(matches!(
+            result,
+            Err(ServerError::App(AppErrorCode::OtpMaxMessages, _))
+        ));
         assert_eq!(comms.get_call_count(), 5); // No additional SMS sent
     }
 

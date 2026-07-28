@@ -1,5 +1,6 @@
 use std::fmt;
 
+use axum::http::StatusCode;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use rsa::{RsaPublicKey, pkcs8::DecodePublicKey, traits::PublicKeyParts};
@@ -27,7 +28,12 @@ pub struct Claims {
 
 impl Claims {
     pub fn user_id(&self) -> Result<Uuid, ServerError> {
-        self.sub.parse::<Uuid>().map_err(|_| ServerError::Forbidden)
+        self.sub.parse::<Uuid>().map_err(|_| {
+            ServerError::Http(
+                StatusCode::FORBIDDEN,
+                "Invalid user id in claims".to_string(),
+            )
+        })
     }
 }
 
@@ -77,7 +83,7 @@ pub struct UserIdentity {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "provider_type", rename_all = "lowercase")]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderType {

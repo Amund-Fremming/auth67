@@ -5,6 +5,25 @@ use validator::{Validate, ValidationError};
 
 use crate::models::auth::ProviderType;
 
+pub fn normalize_phone(phone: &str) -> String {
+    let digits: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
+    
+    // Strip leading 00 (international prefix)
+    let stripped = digits.strip_prefix("00").unwrap_or(&digits);
+    
+    // Strip common country codes (47 for Norway, etc.)
+    // If number is longer than 8 digits and starts with country code, strip it
+    if stripped.len() > 8 {
+        if let Some(local) = stripped.strip_prefix("47") {
+            if local.len() >= 8 {
+                return local.to_string();
+            }
+        }
+    }
+    
+    stripped.to_string()
+}
+
 pub const MIN_PASSWORD_LENGTH: usize = 8;
 pub const MAX_PASSWORD_LENGTH: usize = 128;
 
@@ -61,6 +80,14 @@ pub struct LoginRequest {
     pub provider_type: ProviderType,
     pub identifier: String,
     pub password: String,
+}
+
+impl LoginRequest {
+    pub fn normalize(&mut self) {
+        if self.provider_type == ProviderType::Phone {
+            self.identifier = normalize_phone(&self.identifier);
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Validate)]
@@ -139,5 +166,41 @@ impl From<SignupRequest> for User {
             updated_at: Utc::now(),
             last_active_at: Utc::now(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_phone_plain_number() {
+        assert_eq!(normalize_phone("41387142"), "41387142");
+    }
+
+    #[test]
+    fn normalize_phone_with_plus_country_code() {
+        assert_eq!(normalize_phone("+4741387142"), "41387142");
+    }
+
+    #[test]
+    fn normalize_phone_with_double_zero_prefix() {
+        assert_eq!(normalize_phone("004741387142"), "41387142");
+    }
+
+    #[test]
+    fn normalize_phone_country_code_no_prefix() {
+        assert_eq!(normalize_phone("4741387142"), "41387142");
+    }
+
+    #[test]
+    fn normalize_phone_with_spaces_and_dashes() {
+        assert_eq!(normalize_phone("+47 413 87 142"), "41387142");
+        assert_eq!(normalize_phone("413-87-142"), "41387142");
+    }
+
+    #[test]
+    fn normalize_phone_short_number_unchanged() {
+        assert_eq!(normalize_phone("12345678"), "12345678");
     }
 }

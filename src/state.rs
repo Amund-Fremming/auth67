@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::http::StatusCode;
 use sqlx::{Pool, Postgres};
 use tracing::{error, info};
 use uuid::Uuid;
@@ -33,9 +34,12 @@ impl AppState {
         let user_id = claims
             .sub
             .parse::<Uuid>()
-            .map_err(|_| ServerError::Forbidden)?;
+            .map_err(|_| ServerError::Http(StatusCode::FORBIDDEN, "Forbidden".to_string()))?;
         if !CONFIG.admin.is_admin(&user_id) {
-            return Err(ServerError::Forbidden);
+            return Err(ServerError::Http(
+                StatusCode::FORBIDDEN,
+                "Forbidden".to_string(),
+            ));
         }
         Ok(())
     }
