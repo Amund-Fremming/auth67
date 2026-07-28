@@ -39,6 +39,12 @@ fn identifier_in_use_error() -> ServerError {
     ServerError::api(ErrorCode::BadRequest, "Something went wrong")
 }
 
+fn strip_country_code(phone: &str) -> String {
+    let digits: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
+    let local_len = 8.min(digits.len());
+    digits[digits.len() - local_len..].to_string()
+}
+
 pub struct AuthService {
     config: AuthConfig,
     pool: Pool<Postgres>,
@@ -188,9 +194,12 @@ impl AuthService {
             return Err(ServerError::Auth("Phone number not verified".to_string()));
         }
 
-        let identifier = otp.identifier;
+        let normalized_identifier = match provider_type {
+            ProviderType::Phone => strip_country_code(&otp.identifier.clone()),
+            ProviderType::Email => otp.identifier.clone(),
+        };
 
-        if is_identifier_in_use(&self.pool, provider_type, &identifier).await? {
+        if is_identifier_in_use(&self.pool, provider_type, &normalized_identifier).await? {
             warn!("Signup attempted with identifier already in use");
             return Err(identifier_in_use_error());
         }
@@ -198,11 +207,11 @@ impl AuthService {
         let mut user = User::new(given_name, family_name);
         match provider_type {
             ProviderType::Email => {
-                user.email = Some(identifier.clone());
+                user.email = Some(otp.identifier.clone());
                 user.email_verified = true;
             }
             ProviderType::Phone => {
-                user.phone_number = Some(identifier.clone());
+                user.phone_number = Some(otp.identifier.clone());
                 user.phone_number_verified = true;
             }
         }
@@ -211,19 +220,17 @@ impl AuthService {
 
         let mut tx = self.pool.begin().await?;
         db::user::create_user(&mut *tx, &user).await?;
-        // The pre-check above is racy: a concurrent signup can claim the
-        // identifier between check and insert. The unique constraint on
-        // user_identity is the real guarantee; map it to the same response.
-        let identity = db::auth::create_identity(&mut *tx, user.id, provider_type, &identifier)
-            .await
-            .map_err(|e| {
-                if e.is_unique_violation() {
-                    warn!("Signup lost race: identifier registered concurrently");
-                    identifier_in_use_error()
-                } else {
-                    e
-                }
-            })?;
+        let identity =
+            db::auth::create_identity(&mut *tx, user.id, provider_type, &normalized_identifier)
+                .await
+                .map_err(|e| {
+                    if e.is_unique_violation() {
+                        warn!("Signup lost race: identifier registered concurrently");
+                        identifier_in_use_error()
+                    } else {
+                        e
+                    }
+                })?;
         db::auth::create_credential(&mut *tx, identity.id, &password_hash).await?;
         tx.commit().await?;
 
