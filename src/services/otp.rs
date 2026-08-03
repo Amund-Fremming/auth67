@@ -46,7 +46,6 @@ impl OtpService {
         provider_type: ProviderType,
     ) -> Result<OtpResponse, ServerError> {
         let code = Otp::generate_code();
-        println!("🚨 Code {}", code);
         let hash = self.crypto.hash(&code);
 
         let response = db::otp::create_otp(
@@ -145,7 +144,6 @@ impl OtpService {
         }
 
         db::otp::mark_verified(&self.pool, otp_id).await?;
-        println!("🚨 OTP VERIFIIED");
         Ok(())
     }
 }

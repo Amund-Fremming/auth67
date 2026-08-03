@@ -64,10 +64,13 @@ impl CommsPort for CommsAdapter {
             .bearer_auth(&self.resend_api_key)
             .json(&request)
             .send()
-            .await?
-            .json::<SendEmailResponse>()
             .await?;
 
-        Ok(response)
+        let body = response.text().await?;
+        println!("📧 Resend response: {}", body);
+
+        let parsed: SendEmailResponse =
+            serde_json::from_str(&body).expect("Failed to parse Resend response");
+        Ok(parsed)
     }
 }
